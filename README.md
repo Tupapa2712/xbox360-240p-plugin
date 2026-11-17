@@ -2,7 +2,7 @@
 
 An experimental DashLaunch system plugin (`sysdll`) for RGH/JTAG Xbox 360 consoles (kernel **17559**) that forces **true 240p non-interlaced analog video output** on CRTs by patching kernel display tables, programming HANA/ANA registers, and reconfiguring Xenos CRTC/D1 MMIO registers at runtime.
 
-> **Status:** Experimental proof-of-concept. Successfully outputs real 240p on a CRT (with no prior public implementation known), but it has **important known bugs** (see below) and targets hardcoded **17559** kernel addresses. Contributions and feedback from the Xbox 360 / CRT community are very welcome!
+> **Status:** Experimental proof-of-concept. Successfully outputs a real **240p non-interlaced** hardware signal on a CRT (with no prior public implementation known), but it has **important known bugs** and **software downscaling limitations** (see below). Contributions and feedback from the Xbox 360 / CRT community are very welcome!
 
 ---
 
@@ -10,7 +10,15 @@ An experimental DashLaunch system plugin (`sysdll`) for RGH/JTAG Xbox 360 consol
 
 **No.** `aurora_script/Toggle_240p/Main.lua` is **only an optional Aurora utility menu** that writes `cmd.txt` (`t`, `1`, `0`) and reads `state.txt`.
 - **The actual 240p kernel/hardware switching is done entirely by `t240.xex`** (compiled from `src/t240.c`), loaded at boot via DashLaunch (`Hdd:\launch.ini`).
-- **No NAND flash or internal Xbox 360 system files are permanently modified.** Everything is temporary in RAM and controlled by `t240.xex` + `launch.ini` (+ optional `Main.lua`).
+- **No NAND flash or internal Xbox 360 system files are permanently modified.** Everything runs in RAM via `t240.xex` + `launch.ini` (+ optional `Main.lua`).
+
+---
+
+## True 240p Signal vs. `640x480` Downscaling (Important Clarification)
+
+- **Hardware output IS real 240p:** HANA/ANA and the Xenos CRTC/D1 controller output a genuine **240p non-interlaced 15.734 kHz** signal (both fields scan identically, eliminating 480i interlace flicker and producing true 240p scanlines on a CRT).
+- **Software rendering is still `640x480` (downscaled):** No Xbox 360 game or emulator has been built to render a native 240p framebuffer (`320x240` or `256x224`). Games and emulators still render their internal D3D framebuffer at **`640x480`** (or higher), and Xenos downscales/decimates that `640x480` image into the `240p` output signal.
+- So while the **analog video signal is true 240p**, the image inside games/emulators is **downscaled from `640x480`**, not pixel-native 240p from the software source.
 
 ---
 
@@ -30,17 +38,21 @@ Please read these before testing on your console:
 
 ---
 
-## Installation & Testing
+## How to Test Standalone on Xbox 360 (No PC Required)
 
-1. Copy `prebuilt/t240.xex` (or your compiled `build/t240.xex`) to:
-   `Hdd1:\AuroraLaunch\Plugins\t240.xex`
-2. Add it to `Hdd1:\launch.ini` under `[Plugins]`, for example:
+You can install and run everything directly on the console using a **USB flash drive** (no PC network/XBDM connection needed after copying the files):
+
+1. Download `prebuilt/t240.xex` (and optionally `aurora_script/Toggle_240p/Main.lua`) onto a FAT32 USB drive.
+2. On your Xbox 360 (using **Aurora File Manager** or **XeXMenu**):
+   - Copy `t240.xex` from `Usb0:\` to `Hdd1:\AuroraLaunch\Plugins\t240.xex` (or your preferred plugins folder).
+   - *(Optional)* Copy `Main.lua` to `Hdd1:\AuroraLaunch\User\Scripts\Utility\Toggle_240p\Main.lua`.
+3. Open **DashLaunch** on the console (or edit `Hdd1:\launch.ini` directly), assign an unused plugin slot:
    ```ini
    plugin3 = Hdd:\AuroraLaunch\Plugins\t240.xex
    ```
-3. *(Optional)* Copy `aurora_script/Toggle_240p/Main.lua` to:
-   `Hdd1:\AuroraLaunch\User\Scripts\Utility\Toggle_240p\Main.lua`
-4. Reboot the Xbox 360 (in `480i` analog output), open a game or emulator, and hold **`LT + RT + L3 + R3`** (`L2 + R2 + L3 + R3`) to switch to **240p**.
+   Save `launch.ini` to `Hdd` and reboot.
+4. Make sure the Xbox 360 video setting is **480i** (composite/component SD on a CRT).
+5. Launch any game or emulator in Aurora, and **once inside the game/emulator**, hold **`LT + RT + L3 + R3`** (`L2 + R2 + L3 + R3`) to switch the output to **240p** independently on the console.
 
 ---
 
@@ -82,4 +94,5 @@ Outputs `build\t240.xex` (linked with `/DLL /BASE:0x81E00000` and `src\xex.xml`)
 
 1. Fixing the **shutdown / power-off hang** after 240p is enabled (likely related to one of the kernel patches or HANA/CRTC state during `HalReturnToFirmware`).
 2. Fixing **Aurora game launching while 240p is active** (or cleanly hooking `VdSetDisplayMode` / `AvSetDisplayMode` so mode transitions don't break launches or revert to `480i`).
-3. Replacing hardcoded **17559** addresses with dynamic signature/pattern scanning for multi-kernel support.
+3. Achieving **true native 240p framebuffer rendering** in Xbox 360 emulators/homebrew instead of downscaling from `640x480`.
+4. Replacing hardcoded **17559** addresses with dynamic signature/pattern scanning for multi-kernel support.
