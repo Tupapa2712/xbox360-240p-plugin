@@ -12,7 +12,8 @@ An experimental DashLaunch system plugin (`sysdll`) for RGH/JTAG Xbox 360 consol
 
 **USE THIS PLUGIN STRICTLY AT YOUR OWN RISK.**
 - This mod patches kernel RAM, HANA/ANA registers, and Xenos CRTC/D1 MMIO registers directly at runtime.
-- **Tested exclusively on:** **Xbox 360 S (Model 1439, Corona `12V 9.6A`, MFR `2012-01-12`, RGH, kernel `17559`)** connected to a **CRT television via Component cable (YPbPr)**.
+- **Tested exclusively on:** **Xbox 360 S (Model 1439, Corona `12V 9.6A`, MFR `2012-01-12`, RGH, kernel `17559`)** connected to a **CRT television via Component cable (YPbPr)** (**NOT tested over HDMI**).
+- **Kernel `17559` vs. other dashboard updates:** `17559` is the latest official Xbox 360 dashboard/kernel update, and `src/t240.c` uses hardcoded memory addresses from `17559`. Users on other kernel versions can test at their own risk, though differing memory offsets may cause it to fail, not trigger 240p, or crash.
 - **Other exploits / softmods (e.g., Bad Avatar, etc.):** Users on other hack or softmod methods are free to test this if their environment can load it, **but it has NOT been tested outside of RGH and compatibility is unknown**.
 - The author/creator **takes no responsibility for any bricked consoles, hardware damage, or data loss**. Only test this if you know how to recover your `launch.ini` / console if needed.
 
