@@ -93,7 +93,11 @@ When `enable_240p()` is triggered:
 
 ## Building from Source
 
-Requires the **Microsoft Xbox 360 SDK (XEDK)** installed at `C:\Program Files (x86)\Microsoft Xbox 360 SDK`:
+> **Note:** If you only want to test the plugin on your console, use the ready-to-run **`prebuilt/t240.xex`** binary—you do **not** need to compile from source.
+
+To compile `src/t240.c` yourself, you need:
+- **Microsoft Xbox 360 SDK (XEDK)** installed at `C:\Program Files (x86)\Microsoft Xbox 360 SDK`.
+- **Full Microsoft Visual Studio / Visual C++** (e.g. Professional/Ultimate; **Visual Studio Express editions do NOT work** with the Xbox 360 SDK PowerPC toolchain).
 
 ```bat
 build.bat
