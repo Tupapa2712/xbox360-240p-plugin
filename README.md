@@ -2,7 +2,17 @@
 
 An experimental DashLaunch system plugin (`sysdll`) for RGH/JTAG Xbox 360 consoles (kernel **17559**) that forces **true 240p non-interlaced analog video output** on CRTs by patching kernel display tables, programming HANA/ANA registers, and reconfiguring Xenos CRTC/D1 MMIO registers at runtime.
 
-> **Status:** Experimental proof-of-concept. Successfully outputs a real **240p non-interlaced** hardware signal on a CRT (with no prior public implementation known), but it has **important known bugs** and **software downscaling limitations** (see below). Contributions and feedback from the Xbox 360 / CRT community are very welcome!
+> **Status:** Experimental open-source proof-of-concept. Successfully outputs a real **240p non-interlaced** hardware signal on a CRT (with no prior public implementation known), but it has **important known bugs** and **software downscaling limitations** (see below).
+>
+> **Built with Antigravity:** This experiment was developed together with **Antigravity** simply to test forcing 240p on a console that was never originally capable of outputting that resolution. It is **open source**—contributions, forks, and pull requests from the community are welcome!
+
+---
+
+## Disclaimer (Use at Your Own Risk)
+
+**USE THIS PLUGIN STRICTLY AT YOUR OWN RISK.**
+- This mod patches kernel RAM, HANA/ANA registers, and Xenos CRTC/D1 MMIO registers directly at runtime.
+- The author/creator **takes no responsibility for any bricked consoles, hardware damage, or data loss**. Only test this if you have an RGH/JTAG console and know how to recover your `launch.ini` / console if needed.
 
 ---
 
