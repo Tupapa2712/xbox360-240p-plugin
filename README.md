@@ -109,7 +109,8 @@ Outputs `build\t240.xex` (linked with `/DLL /BASE:0x81E00000` and `src\xex.xml`)
 
 ## Help Wanted (Community / Reddit)
 
-1. Fixing the **shutdown / power-off hang** after 240p is enabled (likely related to one of the kernel patches or HANA/CRTC state during `HalReturnToFirmware`).
-2. Fixing **Aurora game launching while 240p is active** (or cleanly hooking `VdSetDisplayMode` / `AvSetDisplayMode` so mode transitions don't break launches or revert to `480i`).
-3. Achieving **true native 240p framebuffer rendering** in Xbox 360 emulators/homebrew instead of downscaling from `640x480`.
-4. Replacing hardcoded **17559** addresses with dynamic signature/pattern scanning for multi-kernel support.
+1. **Develop or adapt emulators for native 240p output:** Build or update Xbox 360 emulators (e.g., RetroArch/libretro frontends, Salvia-360, or standalone cores) to render a **true native 240p framebuffer** (`256x224`, `320x240`, etc.) so they take full pixel-perfect advantage of `t240.xex` without `640x480` downscaling.
+2. **Fixes/patches for retail Xbox 360 games in native 240p:** Investigate D3D9 backbuffer / `D3DPRESENT_PARAMETERS` hooks or game-specific patches so Xbox 360 titles (especially 2D / XBLA / arcade ports) can render natively in 240p.
+3. **Fix the shutdown / power-off hang** after 240p is enabled (likely related to one of the kernel patches or HANA/CRTC state during `HalReturnToFirmware`).
+4. **Fix Aurora game launching while 240p is active** (or cleanly hook `VdSetDisplayMode` / `AvSetDisplayMode` so mode transitions don't break launches or revert to `480i`).
+5. **Replace hardcoded `17559` addresses** with dynamic signature/pattern scanning for multi-kernel support.
