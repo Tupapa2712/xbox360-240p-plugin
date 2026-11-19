@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <em>"Por más que otros se basen en la lógica, los datos, la verdad y el conocimiento, yo sigo creyendo en mi mismo"</em>
+  <em>"No matter how much others rely on logic, data, truth, and knowledge, I keep believing in myself."</em>
 </p>
 
 <p align="center">
