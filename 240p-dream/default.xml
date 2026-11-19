@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <titleinfo>
   <title>240p Dream</title>
-  <description>El emulador definitivo de 240p nativo para Xbox 360 (por tupapa2712), optimizado para televisores CRT analógicos. Disfruta de tus clásicos de 8 y 16 bits con scanlines reales, nitidez Nearest-Neighbor, cero rebote vertical y salida automática al menú (LB+RB+Select). Fork y modificación de Salvia 360.</description>
+  <description>The ultimate native 240p emulator for Xbox 360 (by tupapa2712), optimized for analog CRT TVs. Enjoy 8-bit and 16-bit classics with real scanlines, Nearest-Neighbor sharpness, zero vertical bounce, and automatic return to menu (LB+RB+Select). Open-source fork and modification of Salvia 360.</description>
   <developer>tupapa2712</developer>
   <publisher>tupapa2712</publisher>
   <genre>Emulator / Homebrew</genre>
