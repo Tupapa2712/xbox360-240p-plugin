@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>True 15 kHz non-interlaced 240p analog CRT output for Xbox 360 RGH + Plug-and-Play Native 240p Emulator Frontend</strong><br/>
-  Developed by <strong>tupapa2712</strong>
+  Developed by <strong>tupapa2712</strong> — Code built &amp; assisted with <strong>Gemini</strong>
 </p>
 
 <p align="center">
@@ -186,7 +186,7 @@ build.bat
 
 - **Salvia 360 (Original Project):** **240p Dream** is an open-source fork and CRT-specialized modification of [**Salvia 360**](https://github.com/danibiker/Salvia) created by **DaniBiker**. All credit for the original Xbox 360 Libretro frontend architecture goes to DaniBiker. The original `LICENSE` file from Salvia 360 is preserved verbatim at the root of this repository and in `licenses/`.
 - **Libretro Cores & Upstream Authors:** Huge thanks to the **Libretro / RetroArch** team and the original authors and Xbox 360 porters of every core included in `240p Dream` — including **Snes9x2010**, **Snes9x**, **Nestopia**, **Genesis Plus GX**, **PicoDrive**, **Gambatte**, **VBA-Next**, **FinalBurn Neo (FBNeo)**, **FBANext**, **MAME 2003-Plus**, **Beetle / Mednafen** (PCE, PCE Fast, SuperGrafx, Lynx, NGP, VB, WonderSwan), **PCSXR-360**, **Xbox64 / Wii64**, **DOSBox-Pure**, **PUAE / PUAE2021**, **Frodo**, **Atari800**, **PX68k**, **PrBoom**, **TyrQuake**, **Cannonball**, and **3DOX**. Original core licenses are preserved verbatim in [`licenses/`](licenses/).
-- **240p Hardware Research, `t240.xex` v2.22, & `240p Dream` CRT Fork:** **tupapa2712** (with AI-assisted engineering & testing).
+- **240p Hardware Research, `t240.xex` v2.22, & `240p Dream` CRT Fork:** **tupapa2712** — code explicitly developed, engineered, and assisted with **Gemini** (including reverse-engineering HANA/Xenos registers, live CRT testing, D3D9 4:3 shader implementation, and debugging).
 
 ---
 
