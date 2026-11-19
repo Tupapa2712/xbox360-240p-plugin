@@ -1,26 +1,23 @@
-scriptTitle = "Modo 240p CRT (Toggle)"
-scriptAuthor = "Antigravity"
-scriptVersion = 2
-scriptDescription = "Activa o desactiva el modo 240p Progresivo (15.734 kHz) localmente en la consola, sin necesidad de PC."
+scriptTitle = "Selector 240p CRT (Nativos / Arcade)"
+scriptAuthor = "240p Dream"
+scriptVersion = 3
+scriptDescription = "Configura la resolucion 240p (320x240, 1280x240 o 1920x240) sin activar en Aurora. Dentro del juego nativo/arcade usa LT + RT + L3 + R3 para alternar."
 scriptPermissions = { "filesystem", "content" }
 
-local BASE_DIR = "Hdd1:\\AuroraLaunch\\User\\Scripts\\Utility\\Toggle_240p\\"
-local CMD_PATH = BASE_DIR .. "cmd.txt"
-local STATE_PATH = BASE_DIR .. "state.txt"
+local BASE_DIR    = "Hdd1:\\AuroraLaunch\\User\\Scripts\\Utility\\Toggle_240p\\"
+local CMD_PATH    = BASE_DIR .. "cmd.txt"
+local PRESET_PATH = BASE_DIR .. "preset.txt"
+local STATE_PATH  = BASE_DIR .. "state.txt"
 
-local function readState()
-    if not FileSystem.FileExists(STATE_PATH) then
+local function readTrimmed(path)
+    if not FileSystem.FileExists(path) then
         return nil
     end
-    local ok, data = pcall(FileSystem.ReadFile, STATE_PATH)
+    local ok, data = pcall(FileSystem.ReadFile, path)
     if not ok or not data then
         return nil
     end
-    local s = tostring(data):gsub("[%s%z]+", "")
-    if s == "240p" or s == "480i" then
-        return s
-    end
-    return nil
+    return tostring(data):gsub("[%s%z]+", "")
 end
 
 local function waitForCommandClear(maxSeconds)
@@ -33,7 +30,6 @@ local function waitForCommandClear(maxSeconds)
         end
         return true
     end
-    -- Fallback if os.clock is sandboxed: bounded FileExists checks
     for i = 1, 2000 do
         if not FileSystem.FileExists(CMD_PATH) then
             return true
@@ -45,62 +41,64 @@ end
 local function sendCommand(ch)
     local ok, err = pcall(FileSystem.WriteFile, CMD_PATH, ch)
     if not ok then
-        return false, nil, "No se pudo escribir cmd.txt: " .. tostring(err)
+        return false, "No se pudo escribir cmd.txt: " .. tostring(err)
+    end
+    if ch == "p" then
+        return true, nil
     end
     local cleared = waitForCommandClear(2.0)
     if not cleared then
-        return false, nil, "El plugin t240.xex no respondió a tiempo.\nVerifica que esté cargado en launch.ini."
+        return false, "El plugin t240.xex no respondio a tiempo.\nVerifica que este en Hdd:\\launch.ini."
     end
-    local newState = readState()
-    return true, newState, nil
+    return true, nil
+end
+
+local function presetLabel(code)
+    if code == "3" then return "1280x240p (Super-Res)" end
+    if code == "4" then return "1920x240p (Super-Res)" end
+    return "320x240p (Nativo)"
 end
 
 function main()
-    local currentLabel = readState()
-    if not currentLabel then
-        -- Ask plugin to refresh state.txt once
-        local ok, st, err = sendCommand("s")
-        if ok and st then
-            currentLabel = st
-        else
-            Script.ShowMessageBox(
-                "Modo 240p CRT",
-                err or "t240.xex no está activo en memoria.\nAsegúrate de tenerlo en Hdd:\\launch.ini y reiniciar.",
-                "OK"
-            )
-            return
-        end
-    end
+    local curPreset = readTrimmed(PRESET_PATH) or "1"
+    local curMode = readTrimmed(STATE_PATH) or "480i"
 
-    local targetAction = (currentLabel == "240p") and "Desactivar 240p (volver a 480i)" or "Activar 240p Progresivo"
     local menu = {
-        targetAction,
-        "Forzar 240p Progresivo",
+        "Elegir 320x240p (Nativo 15kHz)",
+        "Elegir 1280x240p (Super-Resolucion)",
+        "Elegir 1920x240p (Super-Resolucion)",
+        "Forzar Apagado Seguro de Consola",
         "Restaurar 480i Entrelazado",
-        "Ver estado actual (" .. currentLabel .. ")",
-    }
-    local actions = {
-        [targetAction] = "t",
-        ["Forzar 240p Progresivo"] = "1",
-        ["Restaurar 480i Entrelazado"] = "0",
-        ["Ver estado actual (" .. currentLabel .. ")"] = "s",
     }
 
-    local ret = Script.ShowPopupList("Modo 240p CRT [" .. currentLabel .. "]", "Sin opciones", menu)
+    local title = "240p Nativo/Arcade [" .. presetLabel(curPreset) .. " | Actual: " .. curMode .. "]"
+    local ret = Script.ShowPopupList(title, "Sin opciones", menu)
     if not ret or ret.Canceled or not ret.Selected then
         return
     end
 
-    local cmd = actions[ret.Selected.Value]
-    if not cmd then
-        return
+    local sel = ret.Selected.Value
+    if sel == "Elegir 320x240p (Nativo 15kHz)" then
+        pcall(FileSystem.WriteFile, PRESET_PATH, "1")
+        local ok, err = sendCommand("r")
+        if not ok then Script.ShowMessageBox("Error 240p", tostring(err), "OK"); return end
+        Script.ShowNotification("Listo: 320x240p. Usa LT+RT+L3+R3 dentro del juego.", 0)
+    elseif sel == "Elegir 1280x240p (Super-Resolucion)" then
+        pcall(FileSystem.WriteFile, PRESET_PATH, "3")
+        local ok, err = sendCommand("r")
+        if not ok then Script.ShowMessageBox("Error 240p", tostring(err), "OK"); return end
+        Script.ShowNotification("Listo: 1280x240p. Usa LT+RT+L3+R3 dentro del juego.", 0)
+    elseif sel == "Elegir 1920x240p (Super-Resolucion)" then
+        pcall(FileSystem.WriteFile, PRESET_PATH, "4")
+        local ok, err = sendCommand("r")
+        if not ok then Script.ShowMessageBox("Error 240p", tostring(err), "OK"); return end
+        Script.ShowNotification("Listo: 1920x240p. Usa LT+RT+L3+R3 dentro del juego.", 0)
+    elseif sel == "Restaurar 480i Entrelazado" then
+        local ok, err = sendCommand("0")
+        if not ok then Script.ShowMessageBox("Error 240p", tostring(err), "OK"); return end
+        Script.ShowNotification("Salida restaurada a 480i (640x480)", 0)
+    elseif sel == "Forzar Apagado Seguro de Consola" then
+        sendCommand("p")
+        Script.ShowNotification("Restaurando 480i y forzando apagado...", 0)
     end
-
-    local ok, mode, err = sendCommand(cmd)
-    if not ok then
-        Script.ShowMessageBox("Error Modo 240p", tostring(err), "OK")
-        return
-    end
-
-    Script.ShowNotification("Modo actual: " .. tostring(mode or "listo"), 0)
 end

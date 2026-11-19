@@ -1,0 +1,119 @@
+#pragma once
+
+#include "beans/structures.h"
+#include "const/cfgconst.h"
+
+#include <string>
+#include <vector>
+#include <map>
+
+struct FieldIdDesc{
+	int id;
+	std::string shortName;
+	std::string desc;
+
+	FieldIdDesc(int pid, std::string pshortName, std::string pdesc){
+		id = pid;
+		desc = pdesc;
+		shortName = pshortName;
+	}
+};
+
+class CfgLoader{
+public:
+	CfgLoader();
+	~CfgLoader();
+
+	static cfg::t_cfg_props configMain [cfg::MAIN_CFG_MAX];
+	static std::string appliedFileParmsCore;
+
+	std::vector<std::unique_ptr<cfg::t_cfg_emu>> emulators;
+	std::map<std::string, std::unique_ptr<cfg::t_emu_props> > startupLibretroParams;
+	std::map<std::string, std::unique_ptr<cfg::t_emu_props> > gameSpecificLibretroParams;
+	// libretro V2 core-option categories (category_key -> display desc), kept in the
+	// order the core declares them. Runtime only, not persisted; used to build the
+	// per-category submenus in the core options menu.
+	std::vector<std::pair<std::string, std::string> > libretroCategories;
+	std::vector<std::string> musicFiles;
+	/* SoundFonts (.sf2) encontrados en el directorio 'system'.  El primer
+	 * elemento es siempre "ninguno".  Runtime, no se persiste: lo que se guarda
+	 * es el indice elegido (cfg::midiSoundfont). */
+	std::vector<std::string> soundfontFiles;
+	/* Si en 'system' hay ROMs del Roland SC-55, findAllSoundfonts lo anade al
+	 * final de soundfontFiles: este es su indice (-1 si no hay) y el directorio
+	 * donde estan.  Va al final para no mover los indices de los .sf2 ya
+	 * guardados en la configuracion. */
+	int sc55ListIndex;
+	std::string sc55RomDir;
+	// Resolucion 240p CRT por juego (0=Auto/Sistema/Global, 1=320x240, 2=640x240, 3=1280x240, 4=1920x240)
+	int gameCrtResolution;
+
+	static bool resolveCrtOverride(int overrideIdx, int &w, int &h);
+	int readGameCrtResolution(const std::string& gamePath);
+
+	std::string saveCoreParams();
+	void loadCoreParams();
+	// Sincronizacion efectiva: el override del core (ConfigEmu::syncMode, 0 =
+	// Auto) o, si esta en Auto, la general (configMain[cfg::syncMode]).
+	int effectiveSyncType();
+	// [XBOX360] Opciones del core POR JUEGO: fichero junto al juego con su mismo
+	// nombre base + CORE_OPT_EXT. En la carga, si existe se aplican en lugar de
+	// las generales del core. Ver launchGame (salvia.cpp).
+	std::string getGameCoreCfgPath(const std::string& gamePath);
+	std::string saveGameCoreParams(const std::string& gamePath);
+	void loadCoreParamsForGame(const std::string& gamePath);
+	// Resetea startupLibretroParams a los defaults declarados por el core.
+	void resetCoreParamsToDefaults();
+	// Aplica un fichero de opciones (key=indice) actualizando `selected` in-place
+	// sobre las entradas existentes (crea minima si falta). Devuelve true si existia.
+	bool applyCoreParamsFile(const std::string& path);
+	std::string saveMainParams();
+	std::string saveCoreOverrideParams(int emuIdx);
+	void findAllBgMusic();
+	void findAllSoundfonts();
+	
+	bool deleteCoreParams();
+	bool deleteGameParams(const std::string& gamePath);
+	//unsigned int findConfigIndex(std::string);
+	
+	int getWidth();
+	int getHeight();
+	void setWidth(int);
+	void setHeight(int);
+	bool isDebug();
+
+	ConfigEmu *getNextCfgEmu();
+    ConfigEmu *getPrevCfgEmu();
+	ConfigEmu *getCfgEmu();
+	ConfigEmu *findCfgEmu(std::string execName);
+	std::string getCoreCfgPath(bool save=false);
+	int recoverGameMenuPos(struct ListStatus &);
+
+	std::map<std::string, std::unique_ptr<cfg::t_emu_props> >& getLibretroParams();
+	int emuCfgPos;
+
+	std::vector<FieldIdDesc> region;
+	std::vector<FieldIdDesc> idioma;
+	int idxRegion;
+	int idxIdioma;
+	t_scale_props current_video_settings;
+
+private:
+	static const std::string CONFIGFILE; 
+	void initMainConfig();
+	void loadMainConfig();
+	void loadEmuConfig(std::string);
+	// Traduce el nombre de preset guardado (assets\shaders) al indice vivo
+	// que usan el menu y XBOX_SelectEffect, con migracion de los valores
+	// numericos 0..12 de versiones anteriores.
+	void resolveShaderModes();
+	int findKeyCfg(const std::string&);
+	void checkSystemLang();
+	
+	void parsearIdiomas(const char*, const std::string&, std::vector<FieldIdDesc>&);
+	void parsearRegiones(const char*, const std::string&, std::vector<FieldIdDesc>&);
+	void getExecutables(std::string, cfg::t_cfg_emu*);
+	std::string getExecutablesStringOrdered(const ConfigEmu& cfg);
+};
+
+

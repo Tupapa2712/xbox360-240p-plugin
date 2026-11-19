@@ -1,0 +1,712 @@
+#include "dirutil.h"
+
+#ifdef _MSC_VER
+#pragma warning(disable: 4996)
+#endif
+
+dirutil::dirutil(){
+}
+
+dirutil::~dirutil(){
+}
+
+/**
+ * 
+ * @param ruta
+ * @return 
+ */
+bool dirutil::isDir(const char* ruta){
+	if (!ruta || !ruta[0]) return false;
+
+    #ifdef DOS
+        //Much faster for dos
+        DIR* dir = opendir(ruta);
+        bool ret = dir != NULL;
+        if (ret)
+            closedir(dir);
+        return ret;
+	//#elif defined(_XBOX)
+	//	return GetFileAttributes(ruta) != 0xFFFFFFFF;
+    #else 
+        struct stat info;
+		memset(&info, 0, sizeof(info));
+		if (stat(ruta, &info) != 0)
+			return false;
+
+        return S_ISDIR(info.st_mode) ? true : false;
+    #endif
+}
+
+/**
+ * Check if a file exists
+ * @return true if and only if the file exists, false else
+ */
+bool dirutil::fileExists(const char* file) {
+    //return std::filesystem::exists(file);
+
+    #ifdef DOS
+        //Much faster for dos
+        ifstream f(file);
+        bool ret = f.good();
+        if (ret)
+            f.close();
+        return ret;
+	#elif defined(_XBOX)
+		return GetFileAttributes(file) != 0xFFFFFFFF;
+    #else
+        struct stat buf;
+		memset(&buf, 0, sizeof(buf));
+        return (stat(file, &buf) == 0);
+    #endif
+}
+
+/**
+* Comprueba si existe el directorio o fichero pasado por parametro
+*/
+bool dirutil::dirExists(const char* ruta){
+    if(isDir(ruta)){
+        return true;
+    } else {
+        return fileExists(ruta);
+    }
+}
+
+/**
+*
+*/
+char * dirutil::getDir(char *buffer){
+	if (!buffer) return NULL;
+
+#ifdef _XBOX
+	memset(buffer, '\0', FILENAME_MAX-1);
+	//Como no se puede obtener la ruta con el ejecutable, lo tenemos que harcodear
+	//Hay que modificar Properties/Xbox360 image conversion/Output-file
+	//y Properties/general/Target Name en windows
+	//EMU_LIB_NAME es una macro que se puede modificar en el fichero Salvia.vcxproj
+	string ruta = "game:\\"; 
+	strncpy(buffer, ruta.c_str(), FILENAME_MAX);
+    return buffer;
+#else
+	memset(buffer, '\0',FILENAME_MAX-1);
+    return getcwd(buffer, PATH_MAX);
+#endif
+}
+
+/**
+*/
+char * dirutil::getDirActual(){
+    return getDir(rutaActual);
+}
+
+/**
+* Find out if a directory (param "parent") is contained whitin another one (param "child")
+*/
+bool dirutil::isChild(const std::string& parent, const std::string& child){
+	std::string lowParent = parent;
+	std::string lowChild = child;
+	Constant::lowerCase(&lowParent);
+	Constant::lowerCase(&lowChild);
+	return lowChild.find(lowParent) != string::npos;
+}
+
+/**
+* Obtiene la extension del fichero (incluyendo el punto)
+*/
+string dirutil::getExtension(string file) {
+    if (file.empty()) return "";
+
+    // 1. Buscamos el ultimo separador de carpeta para aislar el nombre
+    size_t lastSep = file.find_last_of("/\\");
+    size_t startSearch = (lastSep == string::npos) ? 0 : lastSep + 1;
+
+    // 2. Buscamos el punto solo a partir del nombre del archivo
+    size_t lastDot = file.find_last_of(".");
+
+    // 3. Verificamos que el punto este despues del separador y no sea el primer caracter del nombre
+    // (Esto evita archivos ocultos sin extension como ".bashrc")
+    if (lastDot != string::npos && lastDot >= startSearch && lastDot > 0) {
+        string ext = file.substr(lastDot);
+        Constant::lowerCase(&ext);
+        return ext;
+    }
+
+    return "";
+}
+
+
+/**
+ *
+ * @param str
+ * @param val
+ * @return
+ */
+char* dirutil::formatdate(char* str, time_t val){
+    int tam = 36;
+    strftime(str, tam, "%d/%m/%y %H:%M", localtime(&val));
+    return str;
+}
+
+bool dirutil::setFileProperties(FileProps *propFile, string ruta){
+    bool ret = true;
+
+    struct stat info;
+	memset(&info, 0, sizeof(info));
+	bool stat_ok = stat(ruta.c_str(), &info) == 0;
+
+    if(stat_ok && S_ISDIR(info.st_mode)){
+        propFile->filetype = TIPODIRECTORIO;
+        propFile->extension = STR_DIR_EXT;
+    } else {
+        propFile->filetype = TIPOFICHERO;
+        propFile->fileSize = (size_t)info.st_size;
+        propFile->extension = getExtension(ruta);
+    }
+    char mbstr[36];
+    propFile->creationTime = formatdate(mbstr, info.st_ctime);
+    propFile->modificationTime = formatdate(mbstr, info.st_mtime);
+    propFile->iCreationTime = time(&info.st_ctime);
+    propFile->iModificationTime = time(&info.st_mtime);
+    return stat_ok;
+}
+
+int dirutil::findIcon(const char *filename){
+
+    char ext[5] = {' ',' ',' ',' ','\0'};
+    int len = 0;
+
+    if (filename != NULL){
+        len = strlen(filename);
+        if ( len > 4){
+            ext[3] = filename[len-1];
+            ext[2] = filename[len-2];
+            ext[1] = filename[len-3];
+            ext[0] = filename[len-4];
+        }
+    }
+    string data = ext;
+    std::transform(data.begin(), data.end(), data.begin(), ::tolower);
+
+    if (data.find(".txt") != string::npos || data.find(".inf") != string::npos){
+        return page_white_text;
+    } else if (data.find(".gpu") != string::npos || data.find(".gpe") != string::npos
+        || data.find(".exe") != string::npos || data.find(".bat") != string::npos
+        || data.find(".com") != string::npos){
+        return page_white_gear;
+    } else if (data.find(".gz") != string::npos || data.find(".z") != string::npos
+        || data.find(".tar") != string::npos || data.find(".zip") != string::npos
+        || data.find(".rar") != string::npos){
+	    return page_white_compressed;
+	} else if (data.find(".bmp") != string::npos || data.find(".jpg") != string::npos
+        || data.find(".jpeg") != string::npos || data.find(".png") != string::npos
+        || data.find(".gif") != string::npos ){
+        return page_white_picture;
+    } else if (data.find(".bin") != string::npos){
+        return page_white_zip;
+    } else {
+        return page_white;
+    }
+}
+
+unsigned int dirutil::listFiles(const char *strdir, vector<unique_ptr<FileProps>> &filelist, string filtro, bool order, bool properties){
+    unsigned int totalFiles = 0;
+	return listFiles(strdir, filelist, filtro, "", false, order, properties);
+}
+
+unsigned int dirutil::listFiles(const char *strdir, vector<unique_ptr<FileProps>> &filelist, string filtroExt, string filtroName, bool order, bool properties){
+    return listFiles(strdir, filelist, filtroExt, filtroName, false, order, properties);
+}
+
+unsigned int dirutil::listFiles(const char *strdir, vector<unique_ptr<FileProps>> &filelist, string filtroExt, string filtroName, bool includeDirs, bool order, bool properties){
+	unsigned int totalFiles = 0;
+
+#ifdef _XBOX
+	WIN32_FIND_DATA findData;
+    HANDLE hFind = INVALID_HANDLE_VALUE;
+    // Es necesario anyadir "\*" al final de la ruta para buscar todos los archivos
+    std::string searchPath = strdir;
+    if (searchPath[searchPath.length() - 1] != '\\') {
+        searchPath += "\\";
+    }
+	string parentDir = searchPath;
+    searchPath += "*";
+
+    // Iniciar la busqueda
+    hFind = FindFirstFile(searchPath.c_str(), &findData);
+
+    if (hFind == INVALID_HANDLE_VALUE) {
+        std::cout << "No se pudo abrir el directorio o esta vacio: " << strdir << std::endl;
+        return 0;
+    }
+	string extension;
+
+    do {
+        // Ignorar los directorios especiales "." y ".." si aparecen
+        if (strcmp(findData.cFileName, ".") == 0 || strcmp(findData.cFileName, "..") == 0) {
+            continue;
+        }
+		bool esDirectorio = (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+		string concatDir = parentDir + findData.cFileName;
+		if (!esDirectorio){
+			extension = getExtension(findData.cFileName);
+			if (foundFilter(filtroExt, filtroName, extension, findData.cFileName)){
+				std::unique_ptr<FileProps> propFile(new FileProps(strdir, findData.cFileName, findIcon(findData.cFileName), TIPOFICHERO));
+				if (properties){
+					setFileProperties(propFile.get(), concatDir);
+				}
+				filelist.emplace_back(std::move(propFile));
+			}
+		} else if (includeDirs){
+			std::unique_ptr<FileProps> propFile(new FileProps(strdir, findData.cFileName, folder, TIPODIRECTORIO));
+			filelist.emplace_back(std::move(propFile));
+		}
+    } while (FindNextFile(hFind, &findData) != 0);
+
+    // Es fundamental cerrar el handle para evitar fugas de memoria
+    FindClose(hFind);
+#else
+	DIR *dp;
+    struct dirent *dirp;
+    if (!dirExists(strdir))
+        return 0;
+
+    string parentDir = strdir;
+    //Miramos a ver si el directorio a explorar tiene una / al final
+    if (strdir != NULL){
+		if (!parentDir.empty() && parentDir.at(parentDir.length()-1) != Constant::getFileSep()[0]){
+            parentDir.append(Constant::tempFileSep);
+        }
+        string extension;
+
+        if((dp  = opendir(strdir)) == NULL) {
+            return 0;
+        } else {
+            while ((dirp = readdir(dp)) != NULL) {
+				// 1. Descartar los directorios virtuales "." y ".." inmediatamente
+				if (strcmp(dirp->d_name, ".") == 0 || strcmp(dirp->d_name, "..") == 0) {
+					continue;
+				}
+
+				// 2. Determinar si es un directorio (usando d_type o tu funcion alternativa)
+				bool esDirectorio = (dirp->d_type == DT_DIR); 
+				// Nota: Si no compila d_type, revierte a: bool esDirectorio = isDir(concatDir.c_str());
+
+				string concatDir = parentDir + string(dirp->d_name);
+
+				if (!esDirectorio) {
+					// Es un archivo: Aplicamos filtros
+					extension = getExtension(dirp->d_name);
+					if (foundFilter(filtroExt, filtroName, extension, dirp->d_name)) {
+						std::unique_ptr<FileProps> propFile(new FileProps(strdir, dirp->d_name, findIcon(dirp->d_name), TIPOFICHERO));
+						if (properties) {
+							setFileProperties(propFile.get(), concatDir);
+						}
+						filelist.emplace_back(std::move(propFile));
+					}
+				} else if (includeDirs) {
+					// Es un directorio y queremos incluirlos
+					std::unique_ptr<FileProps> propFile(new FileProps(strdir, dirp->d_name, folder, TIPODIRECTORIO));
+					filelist.emplace_back(std::move(propFile));
+				}
+			}
+			closedir(dp);
+        }
+    }
+#endif
+	totalFiles = filelist.size();
+    if (order && totalFiles > 0) {
+        std::sort (filelist.begin(), filelist.end(), FileProps::sortByTextUnique);
+    }
+    return totalFiles;
+}
+
+unsigned int dirutil::listFilesRecursive(const char *strdir, vector<unique_ptr<FileProps>> &filelist, string filtro, bool order, bool properties){
+	return listFilesRecursive(strdir, filelist, filtro, "", false, order, properties);
+}
+
+unsigned int dirutil::listFilesRecursive(const char *strdir, vector<unique_ptr<FileProps>> &filelist, string filtroExt, string filtroName, bool order, bool properties){
+	return listFilesRecursive(strdir, filelist, filtroExt, filtroName, false, order, properties);
+}
+
+/**
+ * Lista todos los ficheros del directorio y de sus subdirectorios.
+ * Recorrido iterativo (sin recursividad real) usando una pila de directorios pendientes.
+ */
+unsigned int dirutil::listFilesRecursive(const char *strdir, vector<unique_ptr<FileProps>> &filelist, string filtroExt, string filtroName, bool includeDirs, bool order, bool properties){
+	if (!strdir || !strdir[0])
+		return 0;
+
+	std::vector<std::string> pendingDirs;
+	pendingDirs.push_back(strdir);
+
+	while (!pendingDirs.empty()) {
+		std::string dir = pendingDirs.back();
+		pendingDirs.pop_back();
+
+		vector<unique_ptr<FileProps>> children;
+		listFiles(dir.c_str(), children, filtroExt, filtroName, true, false, properties);
+
+		for (size_t i = 0; i < children.size(); i++) {
+			if (children[i]->filetype == TIPODIRECTORIO) {
+				std::string childPath = children[i]->dir;
+				if (!childPath.empty() && childPath.at(childPath.length() - 1) != Constant::tempFileSep[0]) {
+					childPath += Constant::tempFileSep;
+				}
+				childPath += children[i]->filename;
+				pendingDirs.push_back(childPath);
+
+				if (includeDirs) {
+					filelist.emplace_back(std::move(children[i]));
+				}
+			} else {
+				filelist.emplace_back(std::move(children[i]));
+			}
+		}
+	}
+
+	if (order && filelist.size() > 0) {
+		std::sort(filelist.begin(), filelist.end(), FileProps::sortByTextUnique);
+	}
+	return filelist.size();
+}
+
+bool dirutil::foundFilter(std::string filtroExt, std::string filtroName, std::string extension, std::string name){
+	return (filtroExt.empty() && filtroName.empty()) ||
+						 (!filtroExt.empty() && extension.length() > 1 && filtroExt.find(extension) != string::npos) ||
+						 (!filtroName.empty() && name.find(filtroName) != string::npos);
+}
+
+// 1. Cambiado a 'const string&' para evitar copiar la cadena al entrar al metodo
+string dirutil::getFileNameNoExt(const string& file) {
+    
+    // 2. Encontrar el ultimo separador
+    size_t lastSep = file.find_last_of("/\\");
+    
+    // Calcular donde empieza realmente el nombre del archivo
+    size_t startPos = (lastSep == string::npos) ? 0 : lastSep + 1;
+    
+    // 3. Buscar el ultimo punto empezando desde el final de la cadena
+    size_t lastDot = file.find_last_of(".");
+    
+    // 4. Si el punto esta antes del nombre del archivo, es que el archivo no tiene extension
+    // (Ejemplo: "ruta.con.punto/archivo_sin_extension")
+    // Tambien validamos que no sea un archivo oculto (ej. ".bashrc")
+    if (lastDot != string::npos && lastDot > startPos && lastDot != startPos) {
+        // Devolvemos el fragmento exacto: desde startPos, con una longitud de (lastDot - startPos)
+        return file.substr(startPos, lastDot - startPos);
+    }
+    
+    // Si no tiene extension, devolvemos desde startPos hasta el final
+    return (startPos == 0) ? file : file.substr(startPos);
+}
+
+string dirutil::getFolder(string file) {
+    if (isDir(file.c_str())) {
+        return file;
+    }
+
+    // Buscamos el ultimo separador de cualquier tipo (\ o /)
+    size_t found = file.find_last_of("/\\");
+
+    if (found != string::npos) {
+        // Si el separador esta al inicio (ej. "/file"), devolvemos "/"
+        if (found == 0) return file.substr(0, 1);
+        
+        // Devolvemos la ruta hasta el ultimo separador (sin incluirlo)
+        return file.substr(0, found);
+    }
+
+#ifdef _XBOX
+	return "game:";
+#else
+    // Si no hay separadores, es un archivo en el directorio actual
+    return ""; //segun prefieras representar el directorio local
+#endif
+}
+
+/**
+ * Obtiene el nombre del fichero (con extension) de una ruta completa
+ */
+string dirutil::getFileName(string file) {
+    if (isDir(file.c_str())) {
+        return file;
+    }
+
+    // Buscamos la ultima aparicion de CUALQUIER separador de carpeta
+    size_t found = file.find_last_of("/\\");
+
+    if (found != string::npos) {
+        // Extraemos todo lo que hay despues del ultimo separador
+        return file.substr(found + 1);
+    }
+
+    // Si no hay separadores, el string ya es el nombre del archivo
+    return file;
+}
+
+/**
+* Devuelve true si se ha hecho el cambio al directorio.
+* False si no se ha podido hacer el cambio. P.ejm: Cambio por un fichero
+*/
+bool dirutil::changeDirAbsolute(const char *str){
+	#ifdef _XBOX
+		return false;
+	#else
+		if(isDir(str)){
+			return (chdir(str) != -1);
+		} else {
+			return false;
+		}
+	#endif
+}
+
+/**
+*
+*/
+bool dirutil::borrarArchivo(string ruta){
+
+    if (isDir(ruta.c_str()))
+        return false;
+    else {
+        if (fileExists(ruta.c_str()))
+            return (remove(ruta.c_str()) != 0) ? false : true;
+        else
+            return false;
+    }
+}
+
+/**
+*
+*/
+int dirutil::createDir(std::string dir) {
+    if (dir.empty()) return 0;
+
+    // 1. Normalizar barras para la plataforma (XDK es estricto con \)
+    #if defined(_XBOX) || defined(_WIN32)
+        char sep = '\\';
+        for (size_t i = 0; i < dir.length(); ++i) if (dir[i] == '/') dir[i] = sep;
+    #else
+        char sep = '/';
+        for (size_t i = 0; i < dir.length(); ++i) if (dir[i] == '\\') dir[i] = sep;
+    #endif
+
+    // 2. Creacion recursiva (asegura que existan los padres)
+    for (size_t i = 0; i < dir.length(); ++i) {
+        if (dir[i] == sep && i > 0) {
+            std::string sub = dir.substr(0, i);
+            // Ignorar si es la letra de unidad (ej: "Hdd:")
+            if (sub.find(':') == sub.length() - 1) continue; 
+            
+            #ifdef _XBOX
+                CreateDirectoryA(sub.c_str(), NULL);
+            #elif defined(_WIN32)
+                _mkdir(sub.c_str());
+            #else
+                mkdir(sub.c_str(), 0777);
+            #endif
+        }
+    }
+
+    // 3. Crear el directorio final
+    #ifdef _XBOX
+        if (CreateDirectoryA(dir.c_str(), NULL) || GetLastError() == ERROR_ALREADY_EXISTS) {
+            return 1; // exito o ya existia
+        }
+        return 0; // Error real (ej: disco lleno o protegido)
+    #elif defined(_WIN32)
+        return (_mkdir(dir.c_str()) == 0 || errno == EEXIST) ? 1 : 0;
+    #else
+        return (mkdir(dir.c_str(), 0777) == 0 || errno == EEXIST) ? 1 : 0;
+    #endif
+}
+
+int dirutil::createDirRecursive(const char* path) {
+    char temp[MAX_PATH];
+    const char* p = path;
+    
+    // Saltamos el prefijo de la unidad (ej: "game:\", "hdd:\")
+    if (strstr(path, ":\\")) {
+        p = strstr(path, ":\\") + 2;
+    }
+
+	while ((p = strchr(p, Constant::tempFileSep[0])) != NULL) {
+        size_t len = p - path;
+        memcpy(temp, path, len);
+        temp[len] = '\0';
+        
+        // Intentar crear el directorio intermedio
+		#if defined(WIN) || defined(_XBOX)
+			CreateDirectory(temp, NULL);
+		#else 
+			return mkdir(temp, 0777);
+		#endif
+        p++;
+    }
+    
+	// Crear el directorio final
+	#if defined(WIN) || defined(_XBOX)
+		return CreateDirectory(path, NULL) || GetLastError() == ERROR_ALREADY_EXISTS;
+	#else
+		return mkdir(path, 0777);
+	#endif
+}
+
+void dirutil::borrarDir(string path)
+{
+#ifdef WIN
+    DIR *dir = opendir(path.c_str());
+    if (dir == NULL) return; // Error al abrir o no es un directorio
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL)
+    {
+        // Saltar "." y ".."
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+            continue;
+
+        // Construir ruta completa
+        string abs_path = path + "/" + entry->d_name;
+
+        // Intentar abrir como directorio para ver si es subcarpeta
+        DIR *sub_dir = opendir(abs_path.c_str());
+        if (sub_dir != NULL) 
+        {
+            closedir(sub_dir);       // Cerramos el test de apertura
+            borrarDir(abs_path);     // Llamada recursiva
+        }
+        else 
+        {
+            remove(abs_path.c_str()); // Es un archivo, borrar directamente
+        }
+    }
+
+    closedir(dir);            // <--- IMPRESCINDIBLE
+    rmdir(path.c_str());      // Borrar la carpeta actual ahora que esta vacia
+#elif defined(_XBOX)
+	// En Xbox 360, las rutas deben terminar en \* para buscar contenido
+
+	std::string searchPath = path;
+    if (!searchPath.empty() && searchPath.at(searchPath.length() - 1) != '\\') {
+        searchPath += "\\";
+    }
+    std::string baseWithSlash = searchPath; // Guardamos para concatenar rapido
+    searchPath += "*";
+
+    WIN32_FIND_DATA findData;
+    HANDLE hFind = FindFirstFile(searchPath.c_str(), &findData);
+
+    if (hFind == INVALID_HANDLE_VALUE) {
+        // En Xbox, remove() es mas lento que DeleteFileA
+        DeleteFileA(path.c_str());
+        return;
+    }
+
+    do {
+        const char* name = findData.cFileName;
+
+        if (name[0] == '.' && (name[1] == '\0' || (name[1] == '.' && name[2] == '\0'))) {
+            continue;
+        }
+
+        std::string fullPath = baseWithSlash + name;
+
+        if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            borrarDir(fullPath);
+        } else {
+            // CRiTICO: La Xbox 360 a veces marca archivos como READONLY si vienen de un DVD/ISO
+            if (findData.dwFileAttributes & FILE_ATTRIBUTE_READONLY) {
+                SetFileAttributesA(fullPath.c_str(), FILE_ATTRIBUTE_NORMAL);
+            }
+            DeleteFileA(fullPath.c_str());
+        }
+    } while (FindNextFile(hFind, &findData));
+
+    FindClose(hFind);
+    
+    // Al eliminar el directorio, el sistema ya garantiza la consistencia
+    RemoveDirectoryA(path.c_str());
+#endif
+}
+
+std::string dirutil::getPathPrefix(std::string filepath, std::string basePath) {
+	std::string BASE_PATH;
+
+	if (basePath.empty()){
+		BASE_PATH = Constant::getAppDir() + Constant::getFileSep();
+	} else {
+		BASE_PATH = basePath;
+	}
+
+	if (filepath.empty()){
+		#ifdef _XBOX
+			//Check if the drive is correct for xbox
+			checkXboxDrive(BASE_PATH);
+		#endif
+
+		LOG_DEBUG("filepath empty. Returning: %s", BASE_PATH.c_str());
+		return BASE_PATH;
+	}
+
+    // 2. Normalizar: Convertir todas las barras al estilo de la plataforma
+    // (Muy importante porque los Cores de Libretro suelen usar '/')
+    for (size_t i = 0; i < filepath.length(); ++i) {
+        if (filepath[i] == '/' || filepath[i] == '\\') {
+            filepath[i] = Constant::tempFileSep[0];
+        }
+    }
+
+    // 3. Detectar si es ruta absoluta (contiene ':' o empieza por SEP)
+    bool isAbsolute = (filepath.find(':') != std::string::npos || filepath[0] == Constant::tempFileSep[0]);
+
+    if (isAbsolute) {
+		//LOG_DEBUG("filepath absolute. Returning: %s", filepath.c_str());
+        return filepath;
+    }
+
+    // 4. Concatenacion inteligente (evitar game:\\roms o game:roms)
+    std::string result = BASE_PATH;
+    
+    // Si la base no termina en SEP y el filepath no empieza con SEP, anyadirlo
+    if (result.at(result.length() - 1) != Constant::tempFileSep[0] && filepath[0] != Constant::tempFileSep[0]) {
+        result += Constant::tempFileSep[0];
+    } 
+    // Si ambos tienen SEP, quitar uno (opcional, pero limpia la ruta)
+    else if (result.at(result.length() - 1) == Constant::tempFileSep[0] && filepath[0] == Constant::tempFileSep[0]) {
+        filepath.erase(0, 1);
+    }
+	
+#ifdef _XBOX
+	//Check if the drive is correct for xbox
+	checkXboxDrive(result);
+#endif
+
+	//LOG_DEBUG("filepath relative. Returning: %s", (result + filepath).c_str());
+    return result + filepath;
+}
+
+std::string dirutil::getRelativeDir(std::string filepath, std::string basePath) {
+	const std::size_t ini = filepath.find(basePath);
+	const std::size_t beginCut = ini + basePath.length();
+	if (ini != std::string::npos && beginCut < filepath.length()){
+		return filepath.substr(beginCut);
+	} else {
+		return filepath;
+	}
+}
+
+//En los casos en los que se corre el xploit que necesita un usb con el hack de bad update,
+//usb0 puede estar ocupado. En esos casos se puede usar una unidad usb:\\ para que se busque automaticamente
+//la unidad correcta
+void dirutil::checkXboxDrive(std::string &path){
+	std::string pathLow = path;
+	Constant::lowerCase(&pathLow);
+	const std::string usb = "usb:" + Constant::getFileSep();
+	if (pathLow.find(usb) != std::string::npos){
+		for (int i=0; i < 3; i++){
+			const std::string newResult = "Usb" + Constant::TipoToStr(i) + ":" + Constant::getFileSep() + path.substr(usb.length());
+			if (dirExists(newResult.c_str())){
+				path = newResult;
+				break;
+			}
+		}
+	}
+}

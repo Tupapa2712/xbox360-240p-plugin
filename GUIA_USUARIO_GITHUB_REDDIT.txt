@@ -1,0 +1,104 @@
+===============================================================================
+     GUÍA DE USUARIO — 240p Nativo en Xbox 360 (t240.xex v2.22 + 240p Dream)
+===============================================================================
+  Autor: tupapa2712
+  "Por más que otros se basen en la lógica, los datos, la verdad y el
+   conocimiento, yo sigo creyendo en mi mismo"
+===============================================================================
+
+¡Bienvenido! Este proyecto permite sacar una señal **240p progresiva real**
+(15.734 kHz, sin parpadeo entrelazado y con scanlines negras auténticas) desde
+una Xbox 360 RGH/JTAG conectada a un televisor CRT analógico, combinando:
+
+  1) `t240.xex` (v2.22): Plugin de DashLaunch que parchea kernel 17559, HANA y
+     Xenos D1SCL para emitir 240p real sin rebote vertical y con nitidez
+     Nearest-Neighbor.
+  2) `240p Dream`: Fork de Salvia 360 adaptado para renderizar en 240p nativo
+     1:1 (incluyendo pantalla completa 4:3 en SNES y NES sin barras negras ni
+     shimmering) con conmutación automática 480i (menú) <-> 240p (juegos).
+
+-------------------------------------------------------------------------------
+1. REQUISITOS
+-------------------------------------------------------------------------------
+- Xbox 360 con RGH / JTAG en **Kernel 17559** y DashLaunch instalado.
+- Televisor **CRT SD analógico (15 kHz)** conectado por **Componente (YPbPr)**
+  o AV compuesto/RGB (NO probado en HDMI).
+- Configuración de video de la Xbox 360 ajustada a **480i (Definición Estándar)**.
+- **Aviso:** Usa este software bajo tu propia responsabilidad. No modifica la
+  NAND de forma permanente (todo se ejecuta en RAM desde `launch.ini`).
+
+-------------------------------------------------------------------------------
+2. INSTALACIÓN DE t240.xex (v2.22)
+-------------------------------------------------------------------------------
+1. Copia `prebuilt\t240.xex` a tu disco duro de Xbox 360, por ejemplo:
+   `Hdd:\AuroraLaunch\Plugins\t240.xex`
+   (También puedes dejar una copia en `Hdd:\t240.xex`).
+2. Abre **DashLaunch** (o edita `Hdd:\launch.ini`) y asigna `t240.xex` en un
+   espacio libre de plugins:
+   ```ini
+   plugin3 = Hdd:\AuroraLaunch\Plugins\t240.xex
+   ```
+3. Guarda `launch.ini` en `Hdd:` y reinicia en frío la consola.
+4. *(Opcional)* Si deseas el script de utilidad en Aurora, copia la carpeta
+   `aurora_script\Toggle_240p` en `Hdd:\AuroraLaunch\User\Scripts\Utility\`.
+
+-------------------------------------------------------------------------------
+3. INSTALACIÓN DE 240p Dream (CON DETECCIÓN AUTOMÁTICA EN AURORA)
+-------------------------------------------------------------------------------
+1. Copia la carpeta completa `240p Dream` en tu consola, por ejemplo:
+   `Hdd:\Emulators\240p Dream\`
+   Dentro ya vienen incluidos:
+   - Todos los núcleos optimizados (SNES `Snes9x2010.xex` / `Snes9x.xex` y NES
+     `Nestopia.xex` en 4:3 completo 240p 1:1, Mega Drive `Genesis-Plus-GX.xex`,
+     y el resto de sistemas).
+   - `default.xml` y la carpeta `Media\` (`cover.png` caja 3D completa,
+     `banner.png`, `background.png` 720p y `icon.png` 128x128 estilo Frutiger
+     Aero) para que **Aurora** detecte automáticamente la portada, banner,
+     fondo, ícono, título y descripción al escanear tu carpeta de emuladores.
+2. Coloca tus ROMs en `Hdd:\Emulators\240p Dream\roms\<sistema>\`.
+3. En Aurora, escanea tus rutas de contenido (o importa los recursos de
+   `Media\` si ya tenías el acceso directo creado) y verás **240p Dream** listo
+   con todo su arte.
+
+-------------------------------------------------------------------------------
+4. USO AUTOMÁTICO EN EMULADORES (240p Dream)
+-------------------------------------------------------------------------------
+¡No necesitas presionar ningún atajo manual para entrar o salir de 240p!
+- Al abrir **240p Dream**, el menú principal (`default.xex`) arranca
+  automáticamente en **480i** para máxima legibilidad en el CRT.
+- Al elegir cualquier juego (SNES, NES, Mega Drive/Genesis, etc.), el núcleo
+  avisa a `t240.xex` mediante el beacon `S240` y la consola cambia sola a
+  **240p real** con scanlines nítidas, cero rebote vertical y 4:3 completo.
+- Para salir del juego y volver al menú principal de 240p Dream:
+  Pulsa **`LB + RB + Select` (Back)**. El emulador devolverá automáticamente
+  la consola a **480i** antes de regresar al menú.
+
+-------------------------------------------------------------------------------
+5. USO EN JUEGOS NATIVOS DE XBOX 360 Y XBLA
+-------------------------------------------------------------------------------
+También puedes activar 240p real en juegos arcade/2D nativos de Xbox 360 y XBLA:
+1. **REGLA DE ORO:** Deja **Aurora siempre en 480i**. NO actives 240p estando
+   en el menú de Aurora, porque bloquearía el lanzamiento de juegos.
+2. Entra normalmente a tu juego de Xbox 360 / XBLA en 480i.
+3. Una vez dentro del juego, mantén presionado:
+   **`LT + RT + L3 + R3`** (gatillos traseros + presionar ambos sticks)
+   para alternar limpiamente entre **240p** y **480i** en cualquier momento
+   (la v2.22 ya corrige el bug de barras verticales al volver a 480i).
+
+-------------------------------------------------------------------------------
+6. NOTAS IMPORTANTES: BOTÓN GUÍA Y APAGADO SEGURO
+-------------------------------------------------------------------------------
+- **Botón Guía (botón central Xbox):** Mientras 240p está activo, el menú Guía
+  del sistema se renderiza pensado para 480i/720p y puede verse recortado o
+  inestable. Si necesitas abrir el Guía o volver a Aurora desde un juego nativo,
+  desactiva primero 240p con **`LT + RT + L3 + R3`** (o sal con **`LB + RB +
+  Select`** en 240p Dream).
+- **Apagado seguro:** Antes de apagar la consola, vuelve siempre a **480i**
+  (menú de 240p Dream o Aurora en 480i). Si intentas apagar con 240p activo y
+  la consola no concluye el apagado, bastará con mantener el botón físico de
+  encendido o desconectar la corriente un instante.
+
+-------------------------------------------------------------------------------
+¡A disfrutar el auténtico 240p en tu CRT!
+— tupapa2712
+===============================================================================

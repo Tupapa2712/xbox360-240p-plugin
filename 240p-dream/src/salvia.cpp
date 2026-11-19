@@ -1,0 +1,2445 @@
+/*
+ * 240p Dream & t240.xex (v2.22)
+ * Desarrollado por: tupapa2712
+ * "Por más que otros se basen en la lógica, los datos, la verdad y el conocimiento, yo sigo creyendo en mi mismo"
+ */
+
+#pragma once
+
+#include "salvia.h"
+#include <video/shaderpreset.h>
+#include <http/httputil.h>
+#include <http/scrapper.h>
+#include <http/gamefaqs.h>
+#include <cheats/cheatmanager.h>
+#include <cheats/rdbreader.h>
+#define PICOJSON_USE_RVALUE_REFERENCE 0   // VS2010 no soporta noexcept (ver scrapper.cpp)
+#include <http/picojson.h>
+#include <io/filelist.h>
+#include <cheats/cheatlocator.h>
+
+// Puente entre los eventos SDL del frontend y el callback de teclado que
+// el core ha registrado via RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK. La
+// direccion del callback es: CORE -> FRONTEND - el frontend lo INVOCA al
+// recibir teclas. DOSBox-Pure y otros cores que escuchan typing dependen
+// de este puente (no leen retro_input_state(RETRO_DEVICE_KEYBOARD)).
+extern "C" void salvia_dispatch_keyboard_event(bool down, unsigned retro_keycode,
+                                               uint32_t character, uint16_t modifiers);
+
+/* Callbacks del retro_midi_interface.  Los llama el CORE desde su hilo de
+ * emulacion, dentro de retro_run, asi que van directos al sintetizador sin
+ * candados (ver el reparto de hilos en src/audio/midisynth.h).
+ *
+ * Solo salida: no hay MIDI de entrada, no tenemos de donde sacarlo. */
+static bool salvia_midi_input_enabled(void)  { return false; }
+static bool salvia_midi_output_enabled(void) { return gameMenu->g_midi.isLoaded(); }
+static bool salvia_midi_read(uint8_t* byte)  { (void)byte; return false; }
+
+static bool salvia_midi_write(uint8_t byte, uint32_t delta_time) {
+	/* delta_time se ignora: los eventos se aplican al sintetizador en el acto y
+	 * el audio del frame se renderiza despues, asi que la cuantizacion es de un
+	 * frame (~16 ms).  Se nota en arpegios muy rapidos y nada mas; partir el
+	 * render en segmentos por evento seria la mejora, pero no hace falta. */
+	(void)delta_time;
+	if (!gameMenu->g_midi.isLoaded())
+		return false;   /* el contrato es "true si se ha escrito el byte" */
+	gameMenu->g_midi.writeByte(byte);
+	return true;
+}
+
+static bool salvia_midi_flush(void) {
+	gameMenu->g_midi.flush();   /* no hay cola que vaciar */
+	return true;
+}
+
+/* Aplica el timing que declara el core: reconfigura el limitador de fps y el
+ * ratio del resampler (sin reabrir el dispositivo) y refresca el aspect ratio.
+ * Apunta lo aplicado en g_applied_core_* para que el recheck sepa si algo
+ * cambio.  Lo usan el handler de SET_SYSTEM_AV_INFO y el recheck tras un cambio
+ * de core-options en caliente. */
+static void applyCoreAvInfo(const struct retro_system_av_info& av) {
+	/* LOS TRES RELOJES, juntos y en una sola linea, porque el subsistema de
+	 * sincronizacion deriva sus consignas de ellos y hasta ahora no se
+	 * reconciliaban:
+	 *
+	 *   core      lo que declara el juego (N64: ~60,13 Hz)
+	 *   panel     contra lo que de verdad se presenta (59,94 NTSC / 50,00 PAL)
+	 *   audio     el dispositivo, fijo y abierto una sola vez
+	 *
+	 * Si `panel` y `core` difieren, la rejilla de deadlines y la de vblanks
+	 * derivan una contra otra: a 60,00 frente a 59,94 son ~1 ms cada 60 frames,
+	 * con un batido de ~17 s.  Eso es lo que se estaba midiendo como "la mitad
+	 * de los frames llegan tarde" con el emulador a pleno rendimiento, y es la
+	 * medida que decide si el rediseno del pacing va por ahi. */
+	{
+		const float panel = SDL_XBOX_GetRefreshRate();
+		LOG_INFO("Sync: relojes -> core %.4f Hz | panel %.4f Hz%s | audio %d Hz | desvio core-panel %.3f%%\n",
+			av.timing.fps,
+			panel,
+			(panel <= 0.0f) ? " (DESCONOCIDO)" : "",
+			(int)g_audio_device_rate,
+			(panel > 0.0f && av.timing.fps > 0.0)
+				? (float)((av.timing.fps / (double)panel - 1.0) * 100.0) : 0.0f);
+	}
+
+	gameMenu->sync->init_fps_counter((float)av.timing.fps);
+	gameMenu->g_audioRate.reset();
+	gameMenu->g_audioRate.init(BUFF_SIZE);
+	gameMenu->g_midi.setSampleRate((int)av.timing.sample_rate);
+	/* Con el dispositivo fijo, un cambio de tasa no obliga a reabrir nada:
+	 * basta recalcular el ratio del resampler. */
+	if (av.timing.sample_rate > 0.0){
+		gameMenu->g_audioRate.setRates(av.timing.sample_rate,
+			(double)g_audio_device_rate);
+		LOG_INFO("Audio: el core cambia a %.1f Hz (ratio %.4f)\n",
+			av.timing.sample_rate, gameMenu->g_audioRate.getBaseRatio());
+	}
+	if (av.geometry.aspect_ratio > 0.0f){
+		aspectRatioValues[RATIO_CORE] = av.geometry.aspect_ratio;
+	}
+	g_applied_core_fps         = av.timing.fps;
+	g_applied_core_sample_rate = av.timing.sample_rate;
+}
+
+static bool retro_environment(unsigned cmd, void *data) {
+	static char dirSystem[MAX_PATH] = {0};
+	static char savePath[MAX_PATH] = {0};
+
+    switch (cmd) {
+        case RETRO_ENVIRONMENT_GET_LOG_INTERFACE: {
+			struct retro_log_callback *log = (struct retro_log_callback*)data;
+			log->log = retro_log_printf;
+            return true;
+        }
+
+		case RETRO_ENVIRONMENT_SET_MESSAGE: {
+			const struct retro_message *msg = (const struct retro_message*)data;
+			if (msg && msg->msg){
+				//LOG_DEBUG("NOTIFICACION DEL CORE: %s (Duracion: %u frames)", msg->msg, msg->frames);
+				gameMenu->showSystemMessage(msg->msg, (unsigned)((msg->frames * 1000) / 60));
+			}
+			return true;
+        }
+
+		// Rotacion solicitada por el core (juegos verticales tipo TATE).
+		// Aceptamos el comando y aplicamos la rotacion al framebuffer en sw_refresh.
+		case RETRO_ENVIRONMENT_SET_ROTATION: {
+			const unsigned *rot = (const unsigned*)data;
+			g_screen_rotation = rot ? (*rot & 3u) : 0u;
+			LOG_DEBUG("SET_ROTATION solicitada por el core: %u (%u grados CCW)",
+			          g_screen_rotation, g_screen_rotation * 90);
+			return true;
+		}
+
+		case RETRO_ENVIRONMENT_GET_VFS_INTERFACE: {
+			struct retro_vfs_interface_info* vfs_info = (struct retro_vfs_interface_info*)data;
+			// Si el core pide version 1, 2 o 3, le damos nuestra v3
+			if (vfs_info->required_interface_version <= 3) {
+				vfs_info->iface = &vfs_interface;
+				return true;
+			}
+			return false;
+		}
+
+		case RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE: {
+            const struct retro_disk_control_callback *cb =
+                (const struct retro_disk_control_callback*)data;
+
+			if (cb) {
+                disk_control = *cb; // Copiamos las funciones que nos da el core
+                // Caso simetrico: si el core SOLO registra la basic (cores antiguos
+                // o builds sin EXT), replicamos los 7 callbacks comunes en
+                // disk_control_ext para que el codigo que lo consuma los vea
+                // poblados. Los 3 callbacks exclusivos de EXT (set_initial_image,
+                // get_image_path, get_image_label) quedan a NULL y DEBEN
+                // consultarse siempre con guard "if (disk_control_ext.xxx)".
+                disk_control_ext.set_eject_state     = cb->set_eject_state;
+                disk_control_ext.get_eject_state     = cb->get_eject_state;
+                disk_control_ext.get_image_index     = cb->get_image_index;
+                disk_control_ext.set_image_index     = cb->set_image_index;
+                disk_control_ext.get_num_images      = cb->get_num_images;
+                disk_control_ext.replace_image_index = cb->replace_image_index;
+                disk_control_ext.add_image_index     = cb->add_image_index;
+				g_hasDiskControl = true;
+                LOG_DEBUG("Interfaz de control de disco registrada por el core.");
+            }
+            return true;
+        }
+
+
+        // Es muy probable que en 2026 tambien te pida la version extendida (V1)
+        case RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE: {
+            const struct retro_disk_control_ext_callback *cb =
+                (const struct retro_disk_control_ext_callback*)data;
+
+            if (cb) {
+                disk_control_ext = *cb;
+                // Si el core registra SOLO la EXT (comportamiento estandar:
+                // no llamara a SET_DISK_CONTROL_INTERFACE si esta retorna true),
+                // replicamos los 7 callbacks comunes en la estructura basic
+                // para que swapDisc/swapToNewDisc los vean poblados.
+                disk_control.set_eject_state     = cb->set_eject_state;
+                disk_control.get_eject_state     = cb->get_eject_state;
+                disk_control.get_image_index     = cb->get_image_index;
+                disk_control.set_image_index     = cb->set_image_index;
+                disk_control.get_num_images      = cb->get_num_images;
+                disk_control.replace_image_index = cb->replace_image_index;
+                disk_control.add_image_index     = cb->add_image_index;
+				g_hasDiskControl = true;
+                LOG_DEBUG("Interfaz de control de disco extendida registrada.");
+            }
+            return true;
+        }
+
+        case RETRO_ENVIRONMENT_GET_GAME_INFO_EXT:
+            // Al devolver false, el core entiende que este frontend es simple
+            // y usara la estructura retro_game_info estandar.
+            return false;
+
+        case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: {
+            // El core envia un puntero al formato que desea usar
+            enum retro_pixel_format requested = *(enum retro_pixel_format*)data;
+			LOG_DEBUG("Solicitando pixelformat %d", (int)requested);
+			fmt = requested; // Guarda esto en tu 
+			// MAME suele requerir 0RGB1555 o XRGB8888. 
+			// Aceptamos lo que pida
+			if (requested == RETRO_PIXEL_FORMAT_0RGB1555 || 
+				requested == RETRO_PIXEL_FORMAT_RGB565   || 
+				requested == RETRO_PIXEL_FORMAT_XRGB8888) {
+				LOG_INFO("Formato de pixel aceptado: %d", requested);
+				return true; 
+			}
+			LOG_ERROR("Core solicita un formato totalmente incompatible");
+			return false;
+        }
+
+		case RETRO_ENVIRONMENT_GET_CAN_DUPE: {
+			// Aqui le decimos al nucleo que el frontend Si puede duplicar frames.
+			*(bool*)data = true; 
+			return true;
+		}
+
+		case RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS:
+			return true;
+
+		case RETRO_ENVIRONMENT_GET_INPUT_BITMASKS:
+			// Al devolver true, le decimos al core: 
+			// "Si, puedes pedirme todos los botones de golpe".
+			return true;
+
+		/* Sintetizador MIDI del frontend (ver src/audio/midisynth.h).
+		 *
+		 * OJO con el tipo del payload: la cabecera de libretro documenta
+		 * "struct retro_midi_interface **", pero NO es asi.  RetroArch castea a
+		 * "struct retro_midi_interface *" y rellena la estructura EN SITIO, y
+		 * eso es lo que esperan los cores (px68k y dosbox-pure le pasan la
+		 * direccion de su propia struct).  Seguir el comentario de la cabecera
+		 * pisaria la primera
+		 * palabra de la estructura del core y reventaria en el primer write.
+		 *
+		 * SIEMPRE se entrega el interface, aunque en este momento no haya
+		 * soundfont cargado.  Devolver false aqui era un error: los cores
+		 * preguntan UNA sola vez (en su retro_init) y se quedan con la
+		 * respuesta para toda la sesion -- prboom guarda un midi_iface_valid
+		 * que ya nunca vuelve a revisar.  Con un false, activar el
+		 * sintetizador despues desde el menu no servia de nada.
+		 *
+		 * Para eso esta output_enabled(), que el core SI consulta cada vez
+		 * (prboom en cada I_RegisterSong): ahi es donde se dice "ahora mismo
+		 * no hay salida MIDI", y en cuanto se carga un banco la siguiente
+		 * cancion ya suena sin tener que recargar el juego. */
+		case RETRO_ENVIRONMENT_GET_MIDI_INTERFACE:{
+			struct retro_midi_interface* iface = (struct retro_midi_interface*)data;
+			if (!iface) return false;
+			/* Este es el momento exacto en que se sabe que el core va a usar
+			 * MIDI, y sigue siendo antes de que suene nada: aqui se abre el
+			 * banco si toca (ver la carga perezosa en midisynth.h). */
+			if (!gameMenu->g_midi.isLoaded())
+				applyMidiSoundfont(true);
+			iface->input_enabled  = salvia_midi_input_enabled;
+			iface->output_enabled = salvia_midi_output_enabled;
+			iface->read           = salvia_midi_read;
+			iface->write          = salvia_midi_write;
+			iface->flush          = salvia_midi_flush;
+			LOG_DEBUG("MIDI: interface entregado al core (soundfont: %s)",
+				gameMenu->g_midi.isLoaded()
+					? gameMenu->g_midi.getPath().c_str()
+					: "ninguno todavia; output_enabled lo dira cuando lo haya");
+			return true;
+		}
+
+		case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY:{
+			std::string currentPath = gameMenu->getCfgLoader()->configMain[cfg::libretrosystem].valueStr;
+
+			// strncpy_s copia, asegura el \0 y devuelve 0 si todo ha ido bien.
+			// Si currentPath es más grande que dirSystem, el programa fallara de forma segura en modo debug.
+			if (strncpy_s(dirSystem, sizeof(dirSystem), currentPath.c_str(), _TRUNCATE) != 0) {
+				// Manejo de error si la ruta era demasiado larga
+				return false;
+			}
+
+			*(const char**)data = dirSystem;
+			return true;
+		}
+
+		case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO:{
+			/* Un core puede cambiar su tasa a mitad de partida (p.ej. FBNeo al
+			 * pasar de cart a CD).  El helper reconfigura limitador + resampler
+			 * sin reabrir el dispositivo y deja anotado lo aplicado. */
+			const struct retro_system_av_info *av_info = (const struct retro_system_av_info *)data;
+			applyCoreAvInfo(*av_info);
+			return true;
+		}
+
+		case RETRO_ENVIRONMENT_SET_GEOMETRY:{
+			const struct retro_game_geometry *geom = (const struct retro_game_geometry*)data;
+			if (geom && geom->aspect_ratio > 0.0f){
+				aspectRatioValues[RATIO_CORE] = geom->aspect_ratio;
+			}
+			return true;
+		}
+		case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY: {
+			std::string currentPath = gameMenu->getSramPath();
+
+            // Copiamos el nuevo path al buffer fijo de forma segura
+            strncpy(savePath, currentPath.c_str(), sizeof(savePath) - 1);
+            savePath[sizeof(savePath) - 1] = '\0'; // Aseguramos el cierre nulo
+
+            // Entregamos SIEMPRE la misma direccion de memoria
+            *(const char**)data = savePath;
+            return true;
+		}
+
+		case RETRO_ENVIRONMENT_SET_SUBSYSTEM_INFO:
+		{
+			//const struct retro_subsystem_info *info = (const struct retro_subsystem_info*)data;
+			//// 1. Limpiar lista de subsistemas previa
+			////gameMenu->clearSubsystems();
+			//// 2. Iterar y guardar
+			//while (info->ident) {
+			//	//gameMenu->registerSubsystem(info);
+			//	LOG_DEBUG("variable - %s:, %s, %d, %d, %s, %s", info->desc, info->ident, info->id, info->num_roms, info->roms->valid_extensions, info->roms->desc);
+			//	info++;
+			//}
+			return true;
+		}
+		// RETRO_ENVIRONMENT_SET_VARIABLES (formato clasico) ──────────────────
+		case RETRO_ENVIRONMENT_SET_VARIABLES:
+		{
+			const auto* vars = static_cast<const retro_variable*>(data);
+			if (!vars) return false;
+
+			// V0 has no categories: drop any left over from a previous V2 core so the
+			// menu stays flat (all these options carry an empty category anyway).
+			gameMenu->getCfgLoader()->libretroCategories.clear();
+
+			//Some cores don't publish their options until a rom is loaded, so we need to diferenciate them
+			//from the game specific ones to be able to store them separately
+			if (!gameMenu->romLoaded && g_currentRompath.empty()){
+				processParameters(vars, gameMenu->getCfgLoader()->startupLibretroParams);
+			} else {
+				//We clear the previous game configuration if it existed
+				gameMenu->getCfgLoader()->gameSpecificLibretroParams.clear();
+				processParameters(vars, gameMenu->getCfgLoader()->gameSpecificLibretroParams);
+			}
+			gameMenu->configMenus->poblarCoreOptions(gameMenu->getCfgLoader());
+			gameMenu->configMenus->resetIndexPos();
+
+			return true;
+		}
+
+
+		// RETRO_ENVIRONMENT_GET_LANGUAGE ────────────────────────────────────
+		case RETRO_ENVIRONMENT_GET_LANGUAGE:
+		{
+			unsigned* lang = static_cast<unsigned*>(data);
+			if (!lang) return false;
+
+			const std::string langStr = gameMenu->getCfgLoader()->configMain[cfg::mainLang].valueStr;
+
+			if (langStr == "es")      *lang = RETRO_LANGUAGE_SPANISH;
+			else if (langStr == "fr") *lang = RETRO_LANGUAGE_FRENCH;
+			else if (langStr == "de") *lang = RETRO_LANGUAGE_GERMAN;
+			else if (langStr == "it") *lang = RETRO_LANGUAGE_ITALIAN;
+			else if (langStr == "pt") *lang = RETRO_LANGUAGE_PORTUGUESE_BRAZIL;
+			else if (langStr == "ru") *lang = RETRO_LANGUAGE_RUSSIAN;
+			else if (langStr == "ko") *lang = RETRO_LANGUAGE_KOREAN;
+			else if (langStr == "ja") *lang = RETRO_LANGUAGE_JAPANESE;
+			else if (langStr == "nl") *lang = RETRO_LANGUAGE_DUTCH;
+			else if (langStr == "pl") *lang = RETRO_LANGUAGE_POLISH;
+			else if (langStr == "ar") *lang = RETRO_LANGUAGE_ARABIC;
+			else if (langStr == "tr") *lang = RETRO_LANGUAGE_TURKISH;
+			else if (langStr == "zh") *lang = RETRO_LANGUAGE_CHINESE_SIMPLIFIED;
+			else                      *lang = RETRO_LANGUAGE_ENGLISH;
+
+			return true;
+		}
+
+		// RETRO_ENVIRONMENT_GET_VARIABLE ─────────────────────────────────────
+		case RETRO_ENVIRONMENT_GET_VARIABLE:
+		{
+			retro_variable* var = static_cast<retro_variable*>(data);
+			if (!var || !var->key) return false;
+
+			//Search first in the core parameters list
+			if (!setParameter(var, gameMenu->getCfgLoader()->startupLibretroParams)){
+				//If not found, search the parameter in the game specific parameters list
+				return setParameter(var, gameMenu->getCfgLoader()->gameSpecificLibretroParams);
+			}
+			return true;
+		}
+
+
+
+		// RETRO_ENVIRONMENT_SET_CORE_OPTIONS / _INTL (V1) ──────────────────
+		case RETRO_ENVIRONMENT_SET_CORE_OPTIONS:
+		case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_INTL:
+		{
+			const retro_core_option_definition* usDefs = nullptr;
+			const retro_core_option_definition* localDefs = nullptr;
+
+			// V1 has no categories: drop any left over from a previous V2 core so the
+			// menu stays flat (applyEntry below sets an empty category on every option).
+			gameMenu->getCfgLoader()->libretroCategories.clear();
+
+			if (cmd == RETRO_ENVIRONMENT_SET_CORE_OPTIONS) {
+				usDefs = static_cast<const retro_core_option_definition*>(data);
+				if (!usDefs) return false;
+			} else {
+				const auto* intl = static_cast<const retro_core_options_intl*>(data);
+				if (!intl || !intl->us) return false;
+				usDefs = intl->us;
+				const std::string lang = gameMenu->getCfgLoader()->configMain[cfg::mainLang].valueStr;
+				if (intl->local && lang != "en")
+					localDefs = intl->local;
+			}
+
+			// Construir un mapa de local key -> index para busqueda rapida
+			std::map<std::string, int> localMap;
+			if (localDefs) {
+				for (int i = 0; localDefs[i].key != nullptr; ++i)
+					localMap[localDefs[i].key] = i;
+			}
+
+			for (int i = 0; usDefs[i].key != nullptr; ++i) {
+				const std::string key = usDefs[i].key;
+
+				// Si existe entrada local, usar su desc y labels; si no, usar us
+				const retro_core_option_definition* locEntry = nullptr;
+				if (localDefs && localMap.count(key))
+					locEntry = &localDefs[localMap[key]];
+
+				const std::string desc = Constant::ansiToUtf8(
+					(locEntry && locEntry->desc) ? locEntry->desc :
+					(usDefs[i].desc ? usDefs[i].desc : ""));
+
+				std::vector<std::string> values, labels;
+				for (int j = 0;
+					 j < RETRO_NUM_CORE_OPTION_VALUES_MAX && usDefs[i].values[j].value != nullptr;
+					 ++j)
+				{
+					values.push_back(usDefs[i].values[j].value);
+					// Label: de local si existe y no esta vacio, si no de us, si no el value key
+					const char* lbl = nullptr;
+					if (locEntry && locEntry->values[j].value)
+						lbl = locEntry->values[j].label;
+					if (!lbl || !*lbl)
+						lbl = usDefs[i].values[j].label;
+					labels.push_back(lbl && *lbl ? Constant::ansiToUtf8(lbl) : usDefs[i].values[j].value);
+				}
+
+				// default_value siempre de us
+				int defaultIdx = 0;
+				if (usDefs[i].default_value) {
+					const std::string defVal = usDefs[i].default_value;
+					for (int j = 0; j < static_cast<int>(values.size()); ++j) {
+						if (values[j] == defVal) { defaultIdx = j; break; }
+					}
+				}
+
+				applyEntry(gameMenu->getCfgLoader()->startupLibretroParams, key, desc, values, defaultIdx, labels);
+			}
+			gameMenu->configMenus->poblarCoreOptions(gameMenu->getCfgLoader());
+			gameMenu->configMenus->resetIndexPos();
+			return true;
+		}
+
+		// RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION ──────────────────────────────
+		case RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION: {
+			if (data) *(unsigned*)data = 2; //Soportamos V2
+			return true;
+		}
+
+		// RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2 / _V2_INTL ──────────────────
+		case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2:
+		case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2_INTL:
+		{
+			const retro_core_options_v2* v2 = nullptr;
+			const retro_core_options_v2* usV2 = nullptr;
+			//Fbneo uses lots of parameters for cheats and dips, so it is mandatory
+			//to clear them before
+			gameMenu->getCfgLoader()->gameSpecificLibretroParams.clear();
+			gameMenu->getCfgLoader()->libretroCategories.clear();
+
+			if (cmd == RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2) {
+				v2 = static_cast<const retro_core_options_v2*>(data);
+			} else {
+				const auto* intl = static_cast<const retro_core_options_v2_intl*>(data);
+				if (!intl || !intl->us) return false;
+				usV2 = intl->us;
+				v2 = intl->us;
+				const std::string lang = gameMenu->getCfgLoader()->configMain[cfg::mainLang].valueStr;
+				if (intl->local && lang != "en")
+					v2 = intl->local;
+			}
+
+			if (!v2 || !v2->definitions) return false;
+
+			const auto defs = v2->definitions;
+			std::vector<std::string> categoriesVec(std::begin(gameCategories), std::end(gameCategories));
+
+			// Parse the category definitions (key -> display desc), preserving the
+			// order the core declares them. Used to build the per-category submenus.
+			// Localized desc comes from v2 (already the local table when _V2_INTL);
+			// fall back to the US table by key when the local desc is missing.
+			if (v2->categories) {
+				auto& cfgCats = gameMenu->getCfgLoader()->libretroCategories;
+				for (int c = 0; v2->categories[c].key != nullptr; ++c) {
+					const std::string catKey = v2->categories[c].key;
+					const char* catDesc = v2->categories[c].desc;
+					if (!catDesc && usV2 && usV2->categories) {
+						for (int k = 0; usV2->categories[k].key != nullptr; ++k) {
+							if (catKey == usV2->categories[k].key) { catDesc = usV2->categories[k].desc; break; }
+						}
+					}
+					cfgCats.push_back(std::make_pair(catKey,
+						Constant::ansiToUtf8(catDesc && *catDesc ? catDesc : catKey.c_str())));
+				}
+			}
+
+			for (int i = 0; defs[i].key != nullptr; ++i) {
+				const std::string key  = defs[i].key;
+
+				// Ocultar Debug Dip de FBNeo (neogeo) - no aportan nada al usuario
+				if (key.compare(0, 16, "fbneo-debug-dip-") == 0)
+					continue;
+
+				// Fallback a us por key (no por indice, los arrays pueden diferir en orden/cantidad)
+				const char* srcDesc = defs[i].desc;
+				if (!srcDesc && usV2 && usV2->definitions) {
+					for (int k = 0; usV2->definitions[k].key != nullptr; ++k) {
+						if (key == usV2->definitions[k].key) {
+							srcDesc = usV2->definitions[k].desc;
+							break;
+						}
+					}
+				}
+
+				// Para las opciones con categoria el core envia ademas desc_categorized:
+				// el mismo nombre pero SIN el prefijo redundante (p.ej. FBNeo manda
+				// "[Dipswitch] Difficulty" en desc y "Difficulty" en desc_categorized).
+				// Como las mostramos dentro de un submenu de categoria, preferimos la
+				// version categorizada; fallback a us por key y, si no, al desc normal.
+				if (defs[i].category_key) {
+					const char* catDescOpt = defs[i].desc_categorized;
+					if ((!catDescOpt || !*catDescOpt) && usV2 && usV2->definitions) {
+						for (int k = 0; usV2->definitions[k].key != nullptr; ++k) {
+							if (key == usV2->definitions[k].key) {
+								catDescOpt = usV2->definitions[k].desc_categorized;
+								break;
+							}
+						}
+					}
+					if (catDescOpt && *catDescOpt)
+						srcDesc = catDescOpt;
+				}
+
+				const std::string desc = Constant::ansiToUtf8(srcDesc ? srcDesc : "");
+
+				std::vector<std::string> values, labels;
+				for (int j = 0;
+					 j < RETRO_NUM_CORE_OPTION_VALUES_MAX && defs[i].values[j].value != nullptr;
+					 ++j)
+				{
+					values.push_back(defs[i].values[j].value);
+					const char* lbl = defs[i].values[j].label;
+					labels.push_back(lbl && *lbl ? Constant::ansiToUtf8(lbl) : defs[i].values[j].value);
+				}
+
+				int defaultIdx = 0;
+				if (defs[i].default_value) {
+					const std::string defVal = defs[i].default_value;
+					for (int j = 0; j < static_cast<int>(values.size()); ++j) {
+						if (values[j] == defVal) { defaultIdx = j; break; }
+					}
+				}
+
+				const std::string catKey = defs[i].category_key ? defs[i].category_key : "";
+
+				if (defs[i].category_key != nullptr) {
+					auto it = std::find(categoriesVec.begin(), categoriesVec.end(), defs[i].category_key);
+					if (it == categoriesVec.end())
+						applyEntry(gameMenu->getCfgLoader()->startupLibretroParams, key, desc, values, defaultIdx, labels, catKey);
+					else
+						applyEntry(gameMenu->getCfgLoader()->gameSpecificLibretroParams, key, desc, values, defaultIdx, labels, catKey);
+				} else {
+					applyEntry(gameMenu->getCfgLoader()->startupLibretroParams, key, desc, values, defaultIdx, labels, catKey);
+				}
+			}
+
+			gameMenu->configMenus->poblarCoreOptions(gameMenu->getCfgLoader());
+			gameMenu->configMenus->volverMenuInicial();
+			return true;
+		}
+
+		case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE: {
+			// Solo devolvemos true si el usuario ha tocado algo en el menu
+			// de la Xbox 360 recientemente.
+			bool *updated = (bool*)data;
+			*updated = gameMenu->configMenus->options_changed_flag;
+			if (*updated){
+				LOG_DEBUG("Core options changed");
+				/* Tras procesar el cambio, el core puede haber alterado su
+				 * temporizado (fps/sample_rate) sin emitir SET_SYSTEM_AV_INFO.
+				 * Reconsultamos av_info una vez despues de este retro_run. */
+				g_recheck_avinfo_pending = true;
+			}
+			// IMPORTANTE: Una vez que el core sabe que hubo un cambio,
+			// reseteamos el flag para que en el siguiente frame no vuelva a procesar todo.
+			gameMenu->configMenus->options_changed_flag = false;
+			return true;
+		}
+
+		case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO: {
+            const struct retro_controller_info *info = (const struct retro_controller_info *)data;
+            // Aqui el Core te esta diciendo que dispositivos soporta.
+            for (unsigned i = 0; info[i].types && i < MAX_PLAYERS; ++i) {
+				t_controller_port *port = &gameMenu->joystick->g_ports[i];
+				port->available_types.clear();
+				for (unsigned j = 0; j < info[i].num_types; j++) {
+					unsigned id = info[i].types[j].id;
+					const char* desc = info[i].types[j].desc;
+					if (desc == NULL) {
+						LOG_DEBUG("Puerto %d: Se recibio un descriptor NULL para el ID %u. Saltando...", i, id);
+						continue; 
+					}
+					LOG_DEBUG("Puerto %d soporta: %s (ID: %u)", i, desc, id);
+					port->available_types.push_back(std::make_pair(id, desc));
+				}
+				gameMenu->joystick->getCkeckedJoyTypeIndex(i);
+			}
+			gameMenu->configMenus->poblarJoystickTypes(gameMenu->joystick);
+            return true;
+        }
+		
+		case RETRO_ENVIRONMENT_SET_AUDIO_BUFFER_STATUS_CALLBACK: {
+			const struct retro_audio_buffer_status_callback *cb = 
+				(const struct retro_audio_buffer_status_callback*)data;
+
+			if (cb) {
+				audio_status_cb = cb->callback; // Guardamos la funcion que el core llamara
+			}
+			return true;
+		}
+		case RETRO_ENVIRONMENT_SET_MINIMUM_AUDIO_LATENCY: {
+			const unsigned *latency_ms = (const unsigned*)data;
+			if (latency_ms) {
+				unsigned requested_latency = *latency_ms;
+				LOG_DEBUG("El core solicita una latencia minima de audio de: %u ms", requested_latency);
+				// Aqui deberias ajustar el tamaño de tu buffer de salida de audio (ej. SDL, XAudio2, etc.)
+				// para que sea al menos de ese tamaño.
+				//audio_system->set_minimum_latency(requested_latency);
+			}
+			return true;
+		}
+		case RETRO_ENVIRONMENT_SET_MEMORY_MAPS: {
+			/* El core envia su mapa de memoria completo.  Copiamos los
+			 * descriptores para poder acceder a regiones como HRAM en
+			 * Game Boy que no estan disponibles via retro_get_memory_data. */
+			const struct retro_memory_map *map = (const struct retro_memory_map*)data;
+			if (map && map->descriptors) {
+				g_num_mem_descriptors = map->num_descriptors;
+				if (g_num_mem_descriptors > MAX_LIBRETRO_MEM_DESCRIPTORS)
+					g_num_mem_descriptors = MAX_LIBRETRO_MEM_DESCRIPTORS;
+				memcpy(g_mem_descriptors, map->descriptors,
+				       g_num_mem_descriptors * sizeof(struct retro_memory_descriptor));
+				LOG_DEBUG("SET_MEMORY_MAPS: captured %u descriptors from core", g_num_mem_descriptors);
+				for (unsigned i = 0; i < g_num_mem_descriptors; i++) {
+					LOG_DEBUG("  desc[%u]: ptr=%p start=0x%05X len=0x%X select=0x%X offset=0x%X flags=0x%X",
+					          i, g_mem_descriptors[i].ptr,
+					          (unsigned)g_mem_descriptors[i].start,
+					          (unsigned)g_mem_descriptors[i].len,
+					          (unsigned)g_mem_descriptors[i].select,
+					          (unsigned)g_mem_descriptors[i].offset,
+					          (unsigned)g_mem_descriptors[i].flags);
+				}
+			}
+			return true;
+		}
+		case RETRO_ENVIRONMENT_SHUTDOWN : {
+			gameMenu->setEmuStatus(EMU_MENU);
+			return true;
+		}
+		
+		case RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME : {
+			if (data){
+				bool supported = *(const bool *) data;
+				g_currentCoreSupportsNoGame = supported;
+				LOG_DEBUG("Core anuncia SET_SUPPORT_NO_GAME = %d\n", supported ? 1 : 0);
+				gameMenu->configMenus->poblarMenuDiscos(g_currentCoreSupportsNoGame ? BOOT_NO_DISK : BOOT_WITH_DISK);
+			}
+			return true;
+		}
+
+		case RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK: {
+			// El Core te esta dando SU funcion callback. Tu solo la recibes.
+			const struct retro_keyboard_callback *cb = (const struct retro_keyboard_callback *)data;
+    
+			if (cb) {
+				core_key_callback = cb->callback;
+				LOG_INFO("El Core ha registrado exitosamente su callback de teclado.");
+				return true;
+			}
+			return false;
+		}
+
+		//Ignoramos este evento
+		case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY: 
+			return false;
+
+		case RETRO_ENVIRONMENT_GET_INPUT_MAX_USERS:
+		{
+			 unsigned *core_max_users_ptr = (unsigned*)data;
+			 if (core_max_users_ptr)
+			 {
+				*core_max_users_ptr = MAX_PLAYERS;
+				return true; 
+			 }
+			 return false;
+		}
+
+		case 30000: { // RETRO_ENVIRONMENT_GET_SERVERS_JSON
+			// Fetch live server list from quakeservers.net
+			static std::string cached;
+			//if (cached.empty()){
+				//Some default servers
+				cached = gameMenu->getCfgLoader()->getCfgEmu()->network_default_servers;
+				unescape_newlines(cached);
+				//Obtained servers from the internet
+				cached.append(Scrapper::scrapQuakeList());
+			//}
+			*(const char **)data = cached.c_str();
+			return true;
+		}
+
+		case 30001: { // RETRO_ENVIRONMENT_DOWNLOAD_BSP
+			const char *filename = *(const char **)data;
+			if (!filename || !filename[0]) return false;
+
+			const std::string romPathLaunched = listMenu->listDir.dir + listMenu->listDir.getRelativePath();
+			std::string mapsDir = romPathLaunched  + Constant::getFileSep() + "maps";
+			std::string localPath = mapsDir + Constant::getFileSep() + filename;
+
+			LOG_DEBUG("Downloading map in: %s", localPath.c_str());
+
+			dirutil d;
+			if (!d.dirExists(mapsDir.c_str()))
+				d.createDirRecursive(mapsDir.c_str());
+
+			bool ok = false;
+			int i=0;
+
+			do{
+				std::string url = QUAKE_MAPS_URL[i] + filename;
+				CurlClient downloader;
+				float progress = 0.0f;
+				LOG_DEBUG("Downloading BSP: %s", url.c_str());
+				ok = downloader.fetchFile(url, localPath, &progress);
+				LOG_DEBUG("Download %s", ok ? "OK" : "FAILED");
+
+				if (ok) {
+					// Verify the downloaded file looks like a valid BSP (byte-level, endian-neutral)
+					FILE *fp = fopen(localPath.c_str(), "rb");
+					if (fp) {
+						unsigned char header[4] = {0};
+						if (fread(header, 1, 4, fp) == 4) {
+							static const unsigned char bsp29[4]  = {0x1D, 0x00, 0x00, 0x00};
+							static const unsigned char bsp2dp[4] = {'B', 'S', 'P', '2'};
+							static const unsigned char bsp2rmq[4]= {'2', 'S', 'P', 'B'};
+							if (memcmp(header, bsp29, 4) != 0 && memcmp(header, bsp2dp, 4) != 0 && memcmp(header, bsp2rmq, 4) != 0) {
+								LOG_DEBUG("Downloaded file is not a valid BSP (0x%02x%02x%02x%02x), deleting",
+									header[0], header[1], header[2], header[3]);
+								ok = false;
+							}
+						}
+						fclose(fp);
+					}
+					if (!ok)
+						remove(localPath.c_str());
+				}
+				i++;
+			} while (!ok && i < QUAKE_MAPS_COUNT);
+
+			return ok;
+		}
+
+		/* ===================================================================
+		 * 30002 / 30003 - Cores que renderizan con Direct3D (Xenon64)
+		 * ===================================================================
+		 *
+		 * Todos los demas cores entregan un buffer de CPU y hw_refresh lo
+		 * copia a la textura del juego.  Un core que ya renderiza con D3D no
+		 * puede hacer eso en Xbox 360: no existen StretchRect ni
+		 * GetRenderTargetData, la unica copia es Resolve() -que escribe
+		 * SIEMPRE tileado- y leer memoria de GPU por CPU va a 20 MB/s, o sea
+		 * unos 61 ms por frame de 640x480x4.
+		 *
+		 * Asi que en vez de copiar pixeles se intercambian dos punteros:
+		 *
+		 *   30002  el core nos pide NUESTRO device.  En Xbox 360 solo puede
+		 *          haber un IDirect3DDevice9 por proceso, asi que no es una
+		 *          optimizacion: es la unica forma de que el core dibuje.
+		 *   30003  el core nos da SU textura, y la ligamos en s0 en vez de la
+		 *          nuestra.  Todo lo de aguas abajo -aspecto, shaders,
+		 *          escalado entero, rotacion, overlay del menu- no se entera.
+		 *
+		 * El core avisa de cada frame llamando a video_refresh con el
+		 * centinela RETRO_HW_FRAME_BUFFER_VALID.  Ver hw_refresh.
+		 * ================================================================= */
+		case 30002: { // RETRO_ENVIRONMENT_SALVIA_GET_D3D_DEVICE
+			#if defined(SALVIA_GPU_VIDEO) && (defined(_XBOX) || defined(WIN))
+			/* Por el accesor de la API publica de libSDLx360, y no por el
+			 * `extern LPDIRECT3DDEVICE9 D3D_Device` de SDL_xboxvideo.h: esa
+			 * cabecera es INTERNA del driver de video y el frontend no la
+			 * incluye.
+			 * [xbox64, 2026-10-26] En Windows, el mismo nombre en
+			 * src/video/win_d3d9.cpp: el device de la capa D3D9 del frontend. */
+			void *dev = SDL_XBOX_GetD3DDevice();
+			if (!data || !dev) return false;
+			*(void **)data = dev;
+			LOG_DEBUG("Core D3D: entregado el device %p", dev);
+			return true;
+			#else
+			return false;
+			#endif
+		}
+
+		case 30003: { // RETRO_ENVIRONMENT_SALVIA_SET_D3D_TEXTURE
+			#if defined(SALVIA_GPU_VIDEO) && (defined(_XBOX) || defined(WIN))
+			/* Tiene que coincidir EXACTAMENTE con la del core
+			 * (libretro/Xenon64/360/Xdk/xenon64/libretro_core.cpp). */
+			struct salvia_d3d_texture {
+				void     *texture;
+				unsigned  width;
+				unsigned  height;
+			};
+			const salvia_d3d_texture *t = (const salvia_d3d_texture *)data;
+
+			if (!t) return false;
+
+			/* texture = NULL significa "retirala": el core la va a liberar y
+			 * volvemos al camino normal.  Lo manda retro_unload_game ANTES de
+			 * soltar la superficie, porque si no el quad se quedaria
+			 * muestreando memoria muerta en el menu. */
+			if (!t->texture || !t->width || !t->height) {
+				SDL_XBOX_SetExternalGameTexture(NULL, 0, 0);
+				/* Se invalida el tamano cacheado para que el siguiente frame
+				 * por el camino normal vuelva a crear la textura del juego
+				 * (la rama de cambio de geometria de hw_refresh). */
+				cfgLoader->current_video_settings.sw  = 0;
+				cfgLoader->current_video_settings.sh  = 0;
+				cfgLoader->current_video_settings.bpp = 0;
+				LOG_DEBUG("Core D3D: textura externa retirada");
+				return true;
+			}
+
+			if (!SDL_XBOX_SetExternalGameTexture(t->texture, (int)t->width, (int)t->height))
+				return false;
+
+			/* Para que el resto del frontend sepa el tamano del juego.  bpp a
+			 * 32: la textura del core es A8R8G8B8. */
+			cfgLoader->current_video_settings.sw  = t->width;
+			cfgLoader->current_video_settings.sh  = t->height;
+			cfgLoader->current_video_settings.bpp = 32;
+
+			LOG_DEBUG("Core D3D: textura externa %ux%u (%p)",
+				t->width, t->height, t->texture);
+			return true;
+			#else
+			return false;
+			#endif
+		}
+
+		default: {
+			if (cmd < 65572){
+				LOG_DEBUG("Comando no tratado: %s", Constant::TipoToStr(cmd).c_str());
+			}
+			// Para comandos desconocidos como 52 o 65587
+			return false;
+		}
+		    
+    }
+    return false; // Por defecto devolver false para comandos desconocidos
+}
+
+static inline void take_screenshot(void* final_src, unsigned width, unsigned height, std::size_t pitch, int bpp = 16){
+	if (gameMenu->statesSram.saveContext.action_postponed.screenshot) {
+        delete[] gameMenu->statesSram.saveContext.action_postponed.screenshot;
+        gameMenu->statesSram.saveContext.action_postponed.screenshot = NULL;
+    }
+
+	const std::size_t bytes_per_pixel = (bpp == 32) ? 4 : 2;
+	const std::size_t total_bytes = (std::size_t)width * height * bytes_per_pixel;
+    gameMenu->statesSram.saveContext.action_postponed.screenshot = new uint8_t[total_bytes];
+    gameMenu->statesSram.saveContext.action_postponed.width = width;
+    gameMenu->statesSram.saveContext.action_postponed.height = height;
+	gameMenu->statesSram.saveContext.action_postponed.bpp = bpp;
+
+    uint8_t* src_ptr = (uint8_t*)final_src;
+    uint8_t* dst_ptr = gameMenu->statesSram.saveContext.action_postponed.screenshot;
+    std::size_t row_size = width * bytes_per_pixel;
+    for (unsigned y = 0; y < height; y++) {
+        memcpy(dst_ptr, src_ptr, row_size);
+        src_ptr += pitch;
+        dst_ptr += row_size;
+    }
+
+    gameMenu->statesSram.saveContext.action_postponed.cycles = 0;
+}
+
+// Rota un framebuffer RGB565 (16 bpp) hacia un buffer denso.
+// `rotation` sigue la convencion libretro: 1=90 CCW, 2=180, 3=270 CCW.
+// Las dimensiones de salida son (sh x sw) para 90/270 y (sw x sh) para 180.
+// `src_pitch_bytes` es el pitch del origen en BYTES; el destino siempre queda
+// denso (pitch = dst_w * 2 bytes).
+static inline void rotate_buffer_16bpp(const uint16_t* src, unsigned sw, unsigned sh,
+                                       std::size_t src_pitch_bytes,
+                                       uint16_t* dst, unsigned rotation) {
+	const std::size_t spx = src_pitch_bytes >> 1; // pitch en pixeles
+
+	switch (rotation) {
+		case 1: { // 90 CCW: dst es sh (ancho) x sw (alto)
+			const unsigned dst_w = sh;
+			const unsigned dst_h = sw;
+			for (unsigned dy = 0; dy < dst_h; ++dy) {
+				uint16_t* drow = dst + dy * dst_w;
+				const unsigned sx_col = sw - 1 - dy;
+				for (unsigned dx = 0; dx < dst_w; ++dx) {
+					drow[dx] = src[dx * spx + sx_col];
+				}
+			}
+			break;
+		}
+		case 2: { // 180
+			for (unsigned dy = 0; dy < sh; ++dy) {
+				const uint16_t* srow = src + (sh - 1 - dy) * spx;
+				uint16_t* drow = dst + dy * sw;
+				for (unsigned dx = 0; dx < sw; ++dx) {
+					drow[dx] = srow[sw - 1 - dx];
+				}
+			}
+			break;
+		}
+		case 3: { // 270 CCW (90 CW): dst es sh (ancho) x sw (alto)
+			const unsigned dst_w = sh;
+			const unsigned dst_h = sw;
+			for (unsigned dy = 0; dy < dst_h; ++dy) {
+				uint16_t* drow = dst + dy * dst_w;
+				for (unsigned dx = 0; dx < dst_w; ++dx) {
+					drow[dx] = src[(sh - 1 - dx) * spx + dy];
+				}
+			}
+			break;
+		}
+		default:
+			break;
+	}
+}
+
+#ifndef SALVIA_GPU_VIDEO
+static inline void sw_refresh(const void *data, unsigned width, unsigned height, std::size_t pitch) {
+    if (!data || width == 0 || height == 0 || *gameMenu->current_scaler_mode == NO_VIDEO) 
+		return;	
+
+    void* final_src = (void*)data;
+
+	//Hacemos la comprobacion del pitch >= width * 4, por si hemos solicitado el RETRO_PIXEL_FORMAT_RGB565
+	//pero el core no lo acepta
+	if (video_bpp == 16 && fmt != RETRO_PIXEL_FORMAT_RGB565){
+		// 2. Gestionar buffer de conversion de forma eficiente
+		std::size_t needed = width * height * sizeof(uint16_t);
+		if (!conversion_buffer || buffer_size < needed) {
+			uint16_t* temp = (uint16_t*)realloc(conversion_buffer, needed);
+			if (!temp) return;
+			conversion_buffer = temp;
+			buffer_size = needed;
+		}
+
+		switch (fmt){
+			case RETRO_PIXEL_FORMAT_XRGB8888: { 
+				convertARGB8888ToRGB565_Fast((uint32_t*)data, width, height, pitch, conversion_buffer, width * 2);
+				break;
+			}
+			case RETRO_PIXEL_FORMAT_0RGB1555: {
+				convert0RGB1555ToRGB565_Fast2((uint16_t*)data, width, height, pitch, conversion_buffer);
+				break;
+			}
+		}
+		pitch = width * 2;
+		final_src = (void*)conversion_buffer;
+	}
+
+	// Rotacion solicitada por el core (juegos verticales tipo agallet, Cave, etc.).
+	// Hecha aqui, tras la conversion a RGB565, para que el escalador reciba ya el
+	// framebuffer en la orientacion final y trabaje con dimensiones swapped si toca.
+	unsigned r_width = width;
+	unsigned r_height = height;
+	if (g_screen_rotation != 0) {
+		const unsigned rw = (g_screen_rotation == 2) ? width : height;
+		const unsigned rh = (g_screen_rotation == 2) ? height : width;
+		const std::size_t needed = (std::size_t)rw * rh * sizeof(uint16_t);
+		if (!rotation_buffer || rotation_buffer_size < needed) {
+			uint16_t* tmp = (uint16_t*)realloc(rotation_buffer, needed);
+			if (!tmp) return;
+			rotation_buffer = tmp;
+			rotation_buffer_size = needed;
+		}
+		rotate_buffer_16bpp((const uint16_t*)final_src, width, height, pitch,
+		                    rotation_buffer, g_screen_rotation);
+		final_src = (void*)rotation_buffer;
+		r_width = rw;
+		r_height = rh;
+		pitch = rw * sizeof(uint16_t); // destino denso
+	}
+
+	if (action_postponed.cycles == 1 && action_postponed.action == SAVE_STATE){
+		take_screenshot(final_src, r_width, r_height, pitch);
+	}
+
+    SDL_Surface* screen = gameMenu->gameScreen;
+
+	t_scale_props scaleProps;
+	scaleProps.src = (uint16_t*)final_src;
+	scaleProps.dst = (uint16_t*)screen->pixels;
+	scaleProps.sw = (int)r_width;
+	scaleProps.sh = (int)r_height;
+	scaleProps.spitch = pitch;
+	scaleProps.dw = screen->w;
+	scaleProps.dh = screen->h;
+	scaleProps.dpitch = screen->pitch;
+	scaleProps.scale = gameMenu->current_scaler_scale;
+	scaleProps.ratio = aspectRatioValues[*gameMenu->current_ratio];
+	scaleProps.integer_scale = *gameMenu->current_integer_scale;
+
+	// 4. Pasar el buffer correcto (ya sea el original de 16 o el convertido)
+#ifdef _XBOX
+	if (video_bpp == 32){
+		scale_software_32bit_xbox(scaleProps, (uint32_t*)final_src, (uint32_t*)screen->pixels);
+		return;
+	}
+#endif
+
+	//Escalamos la imagen con el escalador que hay almacenado en el puntero a funcion
+	gameMenu->current_scaler(scaleProps);
+}
+#endif
+/**
+*
+*/
+static inline void hw_refresh(const void *data, unsigned width, 
+                                unsigned height, std::size_t pitch) {
+    if (!data) return;
+
+    #if defined(SALVIA_GPU_VIDEO) && (defined(_XBOX) || defined(WIN))
+    /* >>> CORE QUE RENDERIZA CON DIRECT3D (Xenon64, xbox64; en Windows,
+     * xbox64).  Ver los environments 30002/30003 en retro_environment.
+     *
+     * OJO CON EL CENTINELA: RETRO_HW_FRAME_BUFFER_VALID es (void*)-1, NO
+     * NULL, asi que el `if (!data)` de arriba NO lo filtra.  Sin esta rama el
+     * memcpy de abajo leeria de 0xFFFFFFFF.
+     *
+     * Aqui no hay nada que copiar: la imagen ya esta en la textura que el core
+     * nos dio por el 30003 y que el quad liga en s0.  Lo unico que queda es lo
+     * que hay que hacer en CADA frame de todas formas: aplicar las opciones de
+     * pantalla y la rotacion. */
+    if (data == RETRO_HW_FRAME_BUFFER_VALID) {
+        gameMenu->checkDisplayOptions();
+
+        static unsigned last_hw_rotation_ext = (unsigned)-100;
+        if (last_hw_rotation_ext != g_screen_rotation) {
+            SDL_XBOX_SetRotation((int)g_screen_rotation);
+            last_hw_rotation_ext = g_screen_rotation;
+        }
+
+        /* ★★ EL SAVESTATE TIENE QUE PASAR POR AQUI.
+         *
+         * `take_screenshot()` no es solo la captura: es tambien quien pone
+         * `action_postponed.cycles = 0`, y ESE cero es lo que dispara
+         * `saveState()` en el bucle principal.  Con el `return` de abajo no
+         * se llamaba nunca, asi que `cycles` se quedaba clavado en 1 y el
+         * guardado no ocurria JAMAS en los cores que renderizan con D3D.
+         *
+         * La imagen no la tenemos en CPU -- la pinta el core en su textura --
+         * asi que hay que pedirsela al driver, que es quien tiene el device y
+         * sabe destilarla.  Cuesta unos 60 ms, y eso seria inasumible por
+         * frame pero es UNA VEZ, junto a un savestate de 8,7 MB que ademas se
+         * comprime con zlib.
+         *
+         * Si la captura falla se sigue igualmente, sin miniatura: la cadena
+         * lo tolera entera -- `saveState()` solo copia la imagen si el
+         * puntero no es NULL, y el hilo de guardado comprueba lo mismo antes
+         * de escribir el PNG. */
+        if (gameMenu->statesSram.saveContext.action_postponed.cycles == 1 && gameMenu->statesSram.saveContext.action_postponed.action == SAVE_STATE) {
+            if (gameMenu->statesSram.saveContext.action_postponed.screenshot) {
+                delete[] gameMenu->statesSram.saveContext.action_postponed.screenshot;
+                gameMenu->statesSram.saveContext.action_postponed.screenshot = NULL;
+            }
+
+            gameMenu->statesSram.saveContext.action_postponed.width  = 0;
+            gameMenu->statesSram.saveContext.action_postponed.height = 0;
+            gameMenu->statesSram.saveContext.action_postponed.bpp    = 32;   /* la textura del core es A8R8G8B8 */
+
+            if (width > 0 && height > 0) {
+                const std::size_t total = (std::size_t)width * height * 4;
+                uint8_t *shot = new uint8_t[total];
+
+                if (SDL_XBOX_CaptureGameTexture(shot, (int)width, (int)height)) {
+                    gameMenu->statesSram.saveContext.action_postponed.screenshot = shot;
+                    gameMenu->statesSram.saveContext.action_postponed.width = width;
+                    gameMenu->statesSram.saveContext.action_postponed.height = height;
+                } else {
+                    delete[] shot;
+                }
+            }
+
+            gameMenu->statesSram.saveContext.action_postponed.cycles = 0;
+        }
+        return;
+    }
+    #endif
+
+    const int bpp = (fmt == RETRO_PIXEL_FORMAT_XRGB8888) ? 32 : 16;
+    const unsigned row_bytes = width * (bpp / 8);
+    SDL_Surface*& screen = gameMenu->gameScreen;
+	t_scale_props &current_video_settings = cfgLoader->current_video_settings;
+
+	#ifdef SALVIA_GPU_VIDEO
+    if (width  != current_video_settings.sw || height != current_video_settings.sh || bpp != current_video_settings.bpp){
+        #ifdef _XBOX
+        // El driver SDL de Xbox crea la textura al tamano del core.
+		screen = XBOX_ResizeGameTexture(width, height, bpp);
+//		screen = SDL_SetVideoMode(width, height, bpp, SDL_DOUBLEBUF);
+        #else
+        // Windows: recrea la textura D3D9 y su surface al tamano del core
+        // SIN tocar la ventana ni el backbuffer.
+        screen = WinD3D9_SetGameMode(width, height, bpp);
+        #endif
+        current_video_settings.sw  = width;
+        current_video_settings.sh  = height;
+        current_video_settings.bpp = bpp;
+		SDL_FillRect(screen, NULL, Constant::colors[clBackground].color);
+    }
+	#endif
+
+	gameMenu->checkDisplayOptions();
+
+	#ifdef SALVIA_GPU_VIDEO
+	// Rotacion HW: gratis en GPU (solo remap de UVs del quad).  No usamos
+	// rotation_buffer en la rama GPU; la textura va a VRAM tal cual y
+	// los shaders (HQx/CRT/etc.) siguen trabajando con la orientacion nativa.
+	{
+		static unsigned last_hw_rotation = -100;
+		if (last_hw_rotation != g_screen_rotation){
+			SDL_XBOX_SetRotation((int)g_screen_rotation);
+			last_hw_rotation = g_screen_rotation;
+		}
+	}
+	#endif
+
+    // ── Determinar el puntero fuente definitivo ──────────────────────────────
+    const void* final_src = data;
+    std::size_t final_pitch = pitch;
+
+    if (fmt == RETRO_PIXEL_FORMAT_0RGB1555){
+        // El surface SDL de 16 bpp espera RGB565: hay que convertir
+        std::size_t needed = (std::size_t)width * height * sizeof(uint16_t);
+
+        if (!conversion_buffer || buffer_size < needed){
+            uint16_t* tmp = (uint16_t*)realloc(conversion_buffer, needed);
+            if (!tmp) return;          // sin memoria, abortar
+            conversion_buffer = tmp;
+            buffer_size       = needed;
+        }
+
+        convert_0RGB1555_to_RGB565((const uint16_t*)data,conversion_buffer,width, height,pitch);
+
+        final_src   = conversion_buffer;
+        final_pitch = width * sizeof(uint16_t); // pitch denso, sin padding
+    }
+
+    // ── Screenshot (usa la fuente ya convertida) ─────────────────────────────
+    if (gameMenu->statesSram.saveContext.action_postponed.cycles == 1 && gameMenu->statesSram.saveContext.action_postponed.action  == SAVE_STATE){
+        take_screenshot((void *)final_src, width, height, final_pitch, bpp);
+    }
+
+    // ── Copiar al surface SDL ─────────────────────────────────────────────────
+    if (SDL_LockSurface(screen) != 0) return;
+    uint8_t*       dst     = (uint8_t*)screen->pixels;
+    const uint8_t* src     = (const uint8_t*)final_src;
+
+    if (final_pitch == (std::size_t)screen->pitch && final_pitch == row_bytes){
+        memcpy(dst, src, row_bytes * height);       // copia directa
+    } else {
+        for (unsigned y = 0; y < height; ++y)       // fila por fila
+        {
+            memcpy(dst, src, row_bytes);
+            dst += screen->pitch;
+            src += final_pitch;
+        }
+    }
+    SDL_UnlockSurface(screen);
+}
+
+
+static void retro_video_refresh(const void *data, unsigned width,
+                                unsigned height, std::size_t pitch) {
+	#ifdef SALVIA_GPU_VIDEO
+		// Xbox y Windows: la GPU escala la textura nativa y aplica el shader.
+		hw_refresh(data, width, height, pitch);
+	#else
+		// Solo plataformas sin ruta GPU: escalado por software.
+		sw_refresh(data, width, height, pitch);
+	#endif
+}
+
+// Despacha un evento SDL_KEYDOWN/KEYUP al core libretro que haya
+// registrado un callback de teclado. Se llama desde joystick.cpp en el
+// loop de eventos SDL. core_key_callback puede ser NULL si el core no
+// usa esta API (p.ej. cores que solo leen retro_input_state).
+extern "C" void salvia_dispatch_keyboard_event(bool down, unsigned retro_keycode,
+                                               uint32_t character, uint16_t modifiers) {
+    if (core_key_callback) {
+        core_key_callback(down, retro_keycode, character, modifiers);
+    }
+}
+
+// Se llama antes de pedir el estado de los inputs
+void retro_input_poll(void) {
+    update_input();
+    // Disparo rapido: fase on/off calculada 1 vez por frame (barato). Solo se consulta
+    // dentro de retro_run() -> EMU_STARTED, asi que no tiene efecto fuera del juego.
+    t_joy_state *in = &gameMenu->joystick->inputs;
+    if (Achievements::instance()->isHardcoreMode()) {
+        // Hardcore RetroAchievements: sin disparo rapido. Forzando la fase a "on", el
+        // gate de retro_input_state nunca suprime -> el boton se comporta normal.
+        in->turboPhaseOn = true;
+    } else {
+        static const Uint32 RF_HALF_MS[3] = {66, 44, 33}; // lento/medio/rapido (~7.5/11/15 Hz)
+        int r = ((unsigned)in->rapidFireRateIdx < 3) ? in->rapidFireRateIdx : 1;
+        in->turboPhaseOn = ((SDL_GetTicks() / RF_HALF_MS[r]) & 1) == 0;
+    }
+}
+
+int16_t retro_input_state(unsigned port, unsigned device, unsigned index, unsigned id) {
+	if (port >= MAX_PLAYERS) 
+        return 0;
+	
+	t_joy_state *inputs = &gameMenu->joystick->inputs;
+
+	if (device == RETRO_DEVICE_JOYPAD && !gameMenu->isOnscreenKeybEnabled()) {
+		const int sdlModifier = inputs->mapperHotkeys.getSdlBtn(port, HK_MODIFIER);
+		const bool modifierPressed = inputs->getSdlBtn(port, sdlModifier);
+
+		// 1. Gestion del Latch de Start
+		#ifdef _XBOX
+		// 1. Cachear el valor para evitar multiples accesos al array
+		const int holdFrames = gameMenu->joystick->startHoldFrames[port];
+		if (holdFrames > 0) {
+			// 2. Obtener el indice del boton una sola vez
+			int sdlBtn = inputs->mapperCore.getSdlBtn(port, RETRO_DEVICE_ID_JOYPAD_START);
+			// 3. Validacion de rango rapida
+			if ((unsigned int)sdlBtn < MAX_SDL_BUTTONS) {
+				// Forzamos el estado true mientras haya frames de retencion
+				inputs->btn_state[port][sdlBtn] = true;
+			}
+		}
+		#endif
+
+		// 2. Respuesta al Core
+		if (id == RETRO_DEVICE_ID_JOYPAD_MASK) {
+			int16_t mask = 0;
+			if (!modifierPressed) {
+				// Fast path: sin modifier, lectura directa sin getSdlBtn por iteracion
+				for (int i = 0; i < maxJoyTargets; i++) {
+					if (inputs->getCoreAny(port, i)) {
+						// Disparo rapido: suprime el bit durante medio ciclo
+						if (inputs->rapidFire[port][i] && !inputs->turboPhaseOn) continue;
+						mask |= (int16_t)(1 << i);
+					}
+				}
+			} else {
+				// Slow path: con modifier activo, filtramos botones
+				for (int i = 0; i < maxJoyTargets; i++) {
+					if (inputs->mapperCore.getSdlBtn(port, i) != sdlModifier)
+						continue;
+					if (inputs->getCoreAny(port, i)) {
+						mask |= (int16_t)(1 << i);
+					}
+				}
+			}
+			return mask;
+		} else {
+			if (id < maxJoyTargets) {
+				if (!modifierPressed) {
+					if (!inputs->getCoreAny(port, id)) return 0;
+					// Disparo rapido: suprime la pulsacion durante medio ciclo
+					if (inputs->rapidFire[port][id] && !inputs->turboPhaseOn) return 0;
+					return 1;
+				}
+				return (inputs->mapperCore.getSdlBtn(port, id) == sdlModifier ||
+						inputs->getCoreAny(port, id)) ? 1 : 0;
+			}
+			return 0;
+		}
+	} 
+	else if (device == RETRO_DEVICE_ANALOG && !gameMenu->isOnscreenKeybEnabled()) {
+		/* Ya no hay numeros de eje cableados aqui. Cada direccion analogica del core
+		 * es un slot de mapperCore.analogDst, reasignable desde el menu y guardado
+		 * en el .joy; la diferencia entre plataformas vive en los defaults
+		 * (analogSlotAxis, beans/structures.h).
+		 *
+		 * El valor del eje se compone restando sus dos direcciones, lo que da gratis
+		 * el eje invertido, el cruzado entre sticks y el asignado a un boton.
+		 * Convencion libretro: X+ es derecha e Y+ es ABAJO. */
+		int slotNeg = -1, slotPos = -1;
+
+		if (index == RETRO_DEVICE_INDEX_ANALOG_LEFT) {
+			if (id == RETRO_DEVICE_ID_ANALOG_X) {
+				slotNeg = t_joy_mapper::analogSlot(JOY_AXIS1_LEFT);
+				slotPos = t_joy_mapper::analogSlot(JOY_AXIS1_RIGHT);
+			} else {
+				slotNeg = t_joy_mapper::analogSlot(JOY_AXIS1_UP);
+				slotPos = t_joy_mapper::analogSlot(JOY_AXIS1_DOWN);
+			}
+		} else if (index == RETRO_DEVICE_INDEX_ANALOG_RIGHT) {
+			if (id == RETRO_DEVICE_ID_ANALOG_X) {
+				slotNeg = t_joy_mapper::analogSlot(JOY_AXIS2_LEFT);
+				slotPos = t_joy_mapper::analogSlot(JOY_AXIS2_RIGHT);
+			} else {
+				slotNeg = t_joy_mapper::analogSlot(JOY_AXIS2_UP);
+				slotPos = t_joy_mapper::analogSlot(JOY_AXIS2_DOWN);
+			}
+		}
+		/* RETRO_DEVICE_INDEX_ANALOG_BUTTON (gatillos analogicos) no se atiende: cae al
+		 * return 0 del final.
+		 *
+		 * Aqui habia una rama para la 360 que leia g_analog_state[port][AXIS_LT/AXIS_RT],
+		 * dos slots reservados que NO escribe nadie, asi que devolvia siempre 0 -- pero
+		 * PARECIA que hacia algo. En la 360 los gatillos son botones digitales y llegan
+		 * por la via JOYPAD; en Windows comparten el eje 2 y se digitalizan en pollKeys.
+		 * Si algun dia se quiere el valor analogico del gatillo, hay que EMPEZAR por
+		 * producirlo en pollKeys. */
+
+		if (slotNeg != -1 && slotPos != -1) {
+			/* El mapeo va de direccion fisica a destino, asi que aqui se pregunta
+			 * "quien apunta a esta direccion del core": analogSlotAxis convierte el
+			 * slot con nombre en el indice virtual que el core espera recibir. */
+			return gameMenu->joystick->inputs.getCoreAnalog(port,
+				analogSlotAxis[slotNeg], analogSlotAxis[slotPos]);
+		}
+	} else if (device == RETRO_DEVICE_MOUSE && !gameMenu->isOnscreenKeybEnabled()) {
+		/* Cada puerto de raton usa el SUYO (ver Joystick::updateMice). Con un solo
+		 * raton todos apuntan al slot 0, que es el raton de SDL de siempre. */
+		const int mi = inputs->mouseOfPort[port];
+		if ((unsigned)mi >= (unsigned)t_joy_state::MAX_MICE) return 0;
+		switch (id) {
+			case RETRO_DEVICE_ID_MOUSE_X:      return inputs->mice_rel_x[mi];
+			case RETRO_DEVICE_ID_MOUSE_Y:      return inputs->mice_rel_y[mi];
+			case RETRO_DEVICE_ID_MOUSE_LEFT:   return inputs->mice_buttons[mi][0];
+			case RETRO_DEVICE_ID_MOUSE_RIGHT:  return inputs->mice_buttons[mi][2];
+			//case RETRO_DEVICE_ID_MOUSE_WHEELUP:   return (inputs->mouse_wheel > 0);
+			//case RETRO_DEVICE_ID_MOUSE_WHEELDOWN: return (inputs->mouse_wheel < 0);
+			case RETRO_DEVICE_ID_MOUSE_MIDDLE: return inputs->mice_buttons[mi][1];
+		}
+	} else if (device == RETRO_DEVICE_LIGHTGUN && !gameMenu->isOnscreenKeybEnabled()) {
+		/* Pistola de luz apuntada con el raton.
+		 *
+		 * SCREEN_X/Y son ABSOLUTAS y normalizadas a [-0x7fff, 0x7fff], no
+		 * deltas: es lo que define libretro y lo que el core convierte despues
+		 * a posicion de barrido.
+		 *
+		 * La base de normalizacion sale de getMouseSurface() y NO de
+		 * SDL_GetVideoSurface(): hay que dividir por el espacio EXACTO al que
+		 * SDL acota mouse_x/mouse_y, que en Xbox no es el que devuelve
+		 * SDL_GetVideoSurface (ver el comentario largo de getMouseSurface --
+		 * con la superficie equivocada el apuntado solo alcanzaba 1/5 del ancho).
+		 *
+		 * La reticula usa esa MISMA superficie, asi que reticula y punto de
+		 * disparo coinciden por construccion y no por ajuste.
+		 *
+		 * El raton del que sale todo esto es el que updateMice le haya asignado a
+		 * ESTE puerto: con dos ratones conectados, dos pistolas independientes. Con
+		 * uno solo, todos los puertos comparten el slot 0 (lo de siempre). */
+		const int  mi = inputs->mouseOfPort[port];
+		/* Sin raton asignado (dos pistolas y un solo raton) se anula lo que sale
+		 * del raton, pero NO lo que sale del mando: AUX_B y START siguen yendo, que
+		 * es lo que deja moverse por los menus del juego. */
+		const bool hasMouse = ((unsigned)mi < (unsigned)t_joy_state::MAX_MICE);
+		switch (id) {
+			case RETRO_DEVICE_ID_LIGHTGUN_SCREEN_X:
+			case RETRO_DEVICE_ID_LIGHTGUN_SCREEN_Y: {
+				SDL_Surface* vs = gameMenu->getMouseSurface();
+				int span, pos;
+				if (!vs || !hasMouse) return 0;
+				if (id == RETRO_DEVICE_ID_LIGHTGUN_SCREEN_X) {
+					span = vs->w - 1;
+					pos  = (int)inputs->mice_x[mi];
+				} else {
+					span = vs->h - 1;
+					pos  = (int)inputs->mice_y[mi];
+				}
+				if (span <= 0) return 0;
+				if (pos < 0)    pos = 0;
+				if (pos > span) pos = span;
+				/* pos*65534 son ~84M como maximo, dentro de int de sobra. */
+				return (int16_t)(((pos * 65534) / span) - 32767);
+			}
+			/* El raton esta ACOTADO a la pantalla, asi que por posicion nunca
+			 * apunta fuera: la respuesta honesta es 0. El disparo fuera de
+			 * pantalla se hace con RELOAD, que es el gesto de recargar de las
+			 * pistolas de verdad y lo que el core traduce al centinela. */
+			case RETRO_DEVICE_ID_LIGHTGUN_IS_OFFSCREEN: return 0;
+
+			case RETRO_DEVICE_ID_LIGHTGUN_TRIGGER: return hasMouse ? inputs->mice_buttons[mi][0] : 0;
+
+			/* Recargar va al boton MEDIO y no al derecho, aunque el derecho sea
+			 * el sitio natural: en Time Crisis el boton A del arma es el PEDAL
+			 * (cubrirse / salir), que se usa constantemente, y RELOAD solo hace
+			 * falta en los juegos que recargan disparando fuera de pantalla.
+			 * El derecho se reserva para el pedal. */
+			case RETRO_DEVICE_ID_LIGHTGUN_RELOAD:  return hasMouse ? inputs->mice_buttons[mi][1] : 0;
+
+			/* AUX_A y AUX_B son los botones A y B del GunCon, que el arma
+			 * presenta al juego como Start y Cruz. Se aceptan tanto del raton
+			 * como del mando: el core DESCARTA los botones del pad en un puerto
+			 * de pistola (igual que upstream), asi que si no se recogen aqui se
+			 * quedan sin usar -- y hacen falta para los menus. */
+			case RETRO_DEVICE_ID_LIGHTGUN_AUX_A:
+				return (hasMouse && inputs->mice_buttons[mi][2]) ||
+				       inputs->getCoreAny(port, RETRO_DEVICE_ID_JOYPAD_START);
+			case RETRO_DEVICE_ID_LIGHTGUN_AUX_B:
+				return inputs->getCoreAny(port, RETRO_DEVICE_ID_JOYPAD_A);
+			case RETRO_DEVICE_ID_LIGHTGUN_START:
+				return inputs->getCoreAny(port, RETRO_DEVICE_ID_JOYPAD_START);
+		}
+	} else if (device == RETRO_DEVICE_KEYBOARD){
+		// Poll-based keyboard query (algunos cores lo usan; otros como
+		// DOSBox-Pure usan el callback event-based, ver
+		// salvia_dispatch_keyboard_event y RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK).
+		if (id < t_joy_state::MAX_RETRO_KEYS) {
+			return inputs->keyboard_state[id].keyjoydown ? 1 : 0;
+		}
+		return 0;
+	}
+	return 0;
+}
+
+/* Unico sitio donde se decide si toca musica de menu.  Lo consultan el hilo de
+ * audio (sdl_audio_callback, para elegir fuente) y el principal (runGameLoop,
+ * para rellenar el anillo); teniendolo aqui no pueden discrepar.
+ *
+ * Suena en todo estado MENOS con la partida en marcha y el overlay dibujado
+ * sobre ella.  En particular SI suena en EMU_MENU aunque haya ROM cargada: ese
+ * es el menu de pausa. */
+static inline bool musicWantedFor(int emuStatus) {
+	return emuStatus != EMU_STARTED && emuStatus != EMU_MENU_OVERLAY;
+}
+
+/* Ruta absoluta de la musica que le toca al core activo, o cadena vacia si no
+ * hay ninguna.  Prioridad: la del core (clave 'music_file' de su .cfg) y, si no
+ * la define, la general (configMain[cfg::musicFile]). */
+static std::string resolveMenuMusicPath() {
+	if (!cfgLoader) return std::string();
+	if (!cfgLoader->configMain[cfg::musicEnabled].valueBool) return std::string();
+
+	ConfigEmu*  emu = cfgLoader->getCfgEmu();
+	std::string rel = (emu && !emu->music_file.empty())
+		? emu->music_file
+		: cfgLoader->configMain[cfg::musicFile].valueStr;
+
+	if (rel.empty()) return std::string();
+	return Constant::getAppDir() + Constant::getFileSep() + rel;
+}
+
+/* Pone (o quita) la musica que corresponde al estado actual de la config.
+ *
+ * ensureLoaded no hace nada si el fichero ya es el que suena, asi que llamar a
+ * esto de mas es barato: al moverse entre cores que comparten musica no se corta
+ * ni se reinicia la cancion. */
+/* Abre (o cierra) el SoundFont que toque segun la configuracion.
+ *
+ * Se llama al arrancar y cada vez que el usuario cambia la opcion en el menu.
+ * NUNCA con una partida en marcha: close() libera el tsf* que el hilo de
+ * emulacion estaria usando en render().  El menu de audio solo es accesible con
+ * el juego pausado o sin ROM, asi que la condicion se cumple sola, pero conviene
+ * tenerla escrita.
+ *
+ * El banco se queda residente toda la sesion, igual que la musica de menu: hay
+ * que tenerlo cargado ANTES de que el core pregunte por GET_MIDI_INTERFACE (que
+ * ocurre en retro_init, antes incluso de saber la tasa de audio del juego), y
+ * releerlo en cada carga seria un tiron notable en la 360. */
+void applyMidiSoundfont(bool loadNow) {
+	CfgLoader* cfg = gameMenu->getCfgLoader();
+	if (!cfg) return;
+
+	std::string path;
+	const int idx = cfg->configMain[cfg::midiSoundfont].valueInt;
+
+	/* El indice 0 es "ninguno" y es lo que apaga el sintetizador sin tocar el
+	 * interruptor general. */
+	if (cfg->configMain[cfg::midiEnabled].valueBool &&
+	    idx > 0 && (std::size_t)idx < cfg->soundfontFiles.size()) {
+		if (idx == cfg->sc55ListIndex)
+			path = std::string(MIDISYNTH_SC55_PREFIX) + cfg->sc55RomDir;   /* Roland SC-55 */
+		else
+			path = cfg->configMain[cfg::libretrosystem].valueStr +
+			       Constant::getFileSep() + cfg->soundfontFiles[idx];
+	}
+
+	LOG_DEBUG("MIDI: applyMidiSoundfont enabled=%d idx=%d listado=%d cargado=%d ruta='%s'",
+		cfg->configMain[cfg::midiEnabled].valueBool ? 1 : 0, idx,
+		(int)cfg->soundfontFiles.size(), gameMenu->g_midi.isLoaded() ? 1 : 0,
+		path.c_str());
+
+	/* El modulo se aplica siempre, este cargado el banco o no: es estado del
+	 * sintetizador, no del fichero. */
+	gameMenu->g_midi.setModuleMode(cfg->configMain[cfg::midiModule].valueInt);
+
+	if (path.empty()) {
+		gameMenu->g_midi.close();
+		return;
+	}
+	if (gameMenu->g_midi.isLoaded() && gameMenu->g_midi.getPath() == path) {
+		gameMenu->g_midi.setVolumePercent(cfg->configMain[cfg::midiVolume].valueInt * 10);
+		return;   /* ya es el que suena: no releer el fichero */
+	}
+
+	/* Carga perezosa (ver midisynth.h).  Desde el menu solo se abre si hay una
+	 * partida en marcha que pueda estar usandolo; si no la hay, el ajuste se
+	 * queda guardado en la configuracion y se aplicara cuando el proximo core
+	 * pida el interface.  Asi mover el volumen o mirar la lista de bancos no
+	 * reserva decenas de MB por las buenas. */
+	if (!loadNow && !gameMenu->romLoaded)
+		return;
+
+	gameMenu->g_midi.open(path, (int)g_applied_core_sample_rate > 0
+	                             ? (int)g_applied_core_sample_rate : 44100);
+	gameMenu->g_midi.setVolumePercent(cfg->configMain[cfg::midiVolume].valueInt * 10);
+}
+
+void applyMenuMusic() {
+	if (!g_music || !audio_opened) return;
+
+	const std::string path = resolveMenuMusicPath();
+	if (path.empty()) {
+		g_music->stop();
+		return;
+	}
+	if (g_music->ensureLoaded(path, g_audio_device_rate)) {
+		SDL_PauseAudio(0);
+	}
+}
+
+//Audio Callbacks for Libretro
+// Callback para una sola muestra (menos eficiente, pero requerido)
+/* Acumulador de la ruta de muestra suelta (ver retro_audio_sample).  A fichero y
+ * no static dentro de la funcion para que closeGame pueda vaciarlo y un juego no
+ * herede las muestras a medio bloque del anterior. */
+#define RETRO_SAMPLE_BLOCK 256
+static int16_t     g_singleSampleBlock[RETRO_SAMPLE_BLOCK * 2];
+static std::size_t g_singleSampleFrames = 0;
+
+/* Buffer de trabajo para mezclar el sintetizador MIDI con el audio del core.
+ * Mismo presupuesto que el temporal del resampler (DRC_MAX_FRAMES): 2048 frames
+ * estereo son 8 KB. */
+#define MIDI_MIX_FRAMES 2048
+static int16_t g_midiMixBuf[MIDI_MIX_FRAMES * 2];
+
+/* Unico punto por el que el audio del core entra al resampler.
+ *
+ * Si el juego no usa MIDI (el caso normal) esto es una rama predecible y el
+ * audio va directo, sin copias.  Si lo usa, hay que copiar a un buffer propio
+ * porque el del core llega const, y ahi encima se renderiza el sintetizador:
+ * tsf_render_short con flag_mixing suma y satura, que es justo el mezclador que
+ * el frontend no tiene. */
+/* Flanco de entrada en fast-forward, para cortar el MIDI una sola vez. */
+static bool g_midiFastForwardCut = false;
+
+static void audioSubmit(const int16_t* data, std::size_t frames, bool blocking) {
+	MidiSynth& midi = gameMenu->g_midi;
+
+	g_midiFastForwardCut = false;   /* llegando audio normal: rearmado */
+
+	if (!midi.isActive()) {
+		gameMenu->g_audioRate.processAndWrite(gameMenu->g_audioBuffer, data, frames, blocking);
+		return;
+	}
+
+	while (frames) {
+		const std::size_t n = (frames > MIDI_MIX_FRAMES) ? (std::size_t)MIDI_MIX_FRAMES : frames;
+		memcpy(g_midiMixBuf, data, n * 2 * sizeof(int16_t));
+		midi.render(g_midiMixBuf, (int)n);
+		gameMenu->g_audioRate.processAndWrite(gameMenu->g_audioBuffer, g_midiMixBuf, n, blocking);
+		data   += n * 2;
+		frames -= n;
+	}
+}
+
+void retro_audio_sample(int16_t left, int16_t right) {
+	/* Ruta de muestra suelta: la usan pocos cores y entregan un frame por
+	 * llamada.  Se acumula un bloque antes de remuestrear por dos motivos:
+	 * llamar al resampler frame a frame haria que el coste fijo de la llamada
+	 * dominase (a 48 kHz son 48.000 llamadas por segundo), y ademas cada lote de
+	 * un solo frame apenas deja avanzar la posicion fraccionaria.
+	 *
+	 * El resto por debajo de un bloque se queda para la siguiente tanda: son
+	 * menos de 6 ms y evita tener que enganchar un flush al final del frame. */
+	if (gameMenu->current_fast_forward && CfgLoader::configMain[cfg::fastForwardMult].valueInt > 10) return;
+
+	g_singleSampleBlock[g_singleSampleFrames * 2]     = left;
+	g_singleSampleBlock[g_singleSampleFrames * 2 + 1] = right;
+	g_singleSampleFrames++;
+
+	if (g_singleSampleFrames >= RETRO_SAMPLE_BLOCK) {
+		const int mode = gameMenu->getCfgLoader()->current_video_settings.sync_type;   /* la efectiva, con el override del core */
+		if (mode != SYNC_FAST_FORWARD) {
+			audioSubmit(g_singleSampleBlock, g_singleSampleFrames, mode == SYNC_TO_AUDIO);
+		}
+		g_singleSampleFrames = 0;
+	}
+}
+
+// Callback para rafagas de muestras (el que usan casi todos los cores)
+std::size_t retro_audio_sample_batch(const int16_t * __restrict data, std::size_t frames) {
+	if (gameMenu->current_fast_forward && CfgLoader::configMain[cfg::fastForwardMult].valueInt > 10)
+		return frames;
+	
+	const int mode = gameMenu->getCfgLoader()->current_video_settings.sync_type;   /* la efectiva, con el override del core */
+    switch(mode) {
+        case SYNC_TO_AUDIO:
+            /* El bloqueo ya sincroniza naturalmente con el reloj de audio, pero
+             * hay que pasar igualmente por el resampler: el dispositivo esta
+             * abierto a tasa fija y escribir crudo sonaria a destiempo. El
+             * bloqueo se conserva -- processAndWrite lo propaga al buffer. */
+            audioSubmit(data, frames, true);
+            break;
+        case SYNC_FAST_FORWARD:
+            /* No se renderiza, pero los eventos MIDI siguen llegando por
+             * salvia_midi_write, asi que las notas se acumularian y sonarian
+             * todas de golpe al volver a velocidad normal.  Se corta una vez, al
+             * entrar: panic() recorre los 16 canales y no interesa repetirlo en
+             * cada lote. */
+            if (!g_midiFastForwardCut) {
+                gameMenu->g_midi.panic();
+                g_midiFastForwardCut = true;
+            }
+            return frames;
+        default:
+            // SYNC_TO_VIDEO / SYNC_NONE: DRC ajusta la tasa para evitar drift
+            audioSubmit(data, frames, false);
+            break;
+    }
+    return frames;
+}
+
+void sdl_audio_callback(void* userdata, Uint8* stream, int len) {
+    if (audio_closing) {
+        memset(stream, 0, len);
+        return;
+    }
+	
+    int16_t* samples = (int16_t*)stream;
+    std::size_t count = len / sizeof(int16_t);
+
+    /* TASA REAL DE CONSUMO DEL DISPOSITIVO.
+     *
+     * POR QUE.  Es el ultimo reloj del sistema que nunca se ha medido:
+     * `g_audio_device_rate` se toma del `obtained` de SDL (init_sdl_audio) y se
+     * cree a ciegas.  Y hay una medida que apunta justo aqui: el DRC del
+     * remuestreador, que es un controlador proporcional con consigna en el 50%
+     * de ocupacion, se estabiliza en el 32-40% (medido, log 23). Un P puro deja
+     * error de regimen, y ese desvio de 15 puntos es exactamente lo que hace
+     * falta para sostener `adj = -0,006`: el frontend cree que tiene que
+     * producir un 0,6% menos de salida de la nominal. Si el dispositivo consume
+     * un 0,6% mas rapido que los 48000 declarados, cuadra en magnitud y signo.
+     *
+     * Descartado ya el resto: panel y core estan los dos en 60,0000 exactos
+     * (traza `Sync: relojes`), y el core declara 32000 cuando su AI corre a
+     * 32006, que son 0,019%: treinta veces poco.
+     *
+     * Cuenta los frames que el dispositivo se lleva de verdad y los divide por
+     * tiempo de reloj. Ventana larga (10 s) porque lo que se busca es una
+     * diferencia de decimas de por ciento, y una ventana corta no la resuelve.
+     *
+     * Corre en el HILO DE AUDIO, asi que aqui NO se registra nada: solo se
+     * publica el resultado en un entero de 32 bits y lo saca al log el hilo
+     * principal.  `Logger::write` es seguro entre hilos (seccion critica), pero
+     * escribe a fichero, y bloquear el callback de audio en un `fflush` -aunque
+     * sea cada 10 s- seria meter un corte de audio justo en la herramienta que
+     * vigila el audio.  Una escritura alineada de 32 bits es atomica en PPC, y
+     * hay un solo escritor y un solo lector. */
+    {
+        static DWORD  rateT0     = 0;
+        static double rateFrames = 0.0;
+
+        const DWORD ahora = GetTickCount();
+
+        rateFrames += (double)(count / 2);
+
+        if (rateT0 == 0) {
+            rateT0     = ahora;
+            rateFrames = 0.0;
+        } else if (ahora - rateT0 >= 10000) {
+            const double seg = (double)(ahora - rateT0) / 1000.0;
+            /* En miliherzios para no necesitar un double compartido: 48000 Hz
+             * son 48.000.000, de sobra dentro de 32 bits sin signo. */
+            g_audio_dev_rate_mhz = (unsigned int)(rateFrames / seg * 1000.0 + 0.5);
+            rateT0     = ahora;
+            rateFrames = 0.0;
+        }
+    }
+
+#ifdef AUDIO_LOG
+    // Trace periodico cada 2s: callback info
+    {
+        static DWORD lastCbTrace = 0;
+        static DWORD cbCount = 0;
+        cbCount++;
+        DWORD now = GetTickCount();
+        if (now - lastCbTrace >= 2000) {
+            DWORD elapsed = now - lastCbTrace;
+            lastCbTrace = now;
+            float callsPerSec = (float)cbCount * 1000.0f / (float)elapsed;
+            cbCount = 0;
+            char buf[128];
+            _snprintf(buf, sizeof(buf),
+                "[SDL_CB] freq=%.1f Hz request=%lu samples (%lu frames)",
+                callsPerSec, (unsigned long)count, (unsigned long)(count / 2));
+            OutputDebugStringA(buf);
+        }
+    }
+#endif
+
+    /* Eleccion de fuente.  Musica y core nunca suenan a la vez, asi que no hace
+     * falta mezclar: basta con elegir de donde se lee.
+     *
+     * Se decide por ESTADO y no por romLoaded: el menu de pausa se abre como
+     * EMU_MENU con el juego cargado (gamemenu.cpp, HK_VIEW_MENU) y ahi SI
+     * queremos musica.  Los unicos dos estados sin musica son la partida en
+     * marcha y el overlay que se dibuja encima de ella.
+     *
+     * Leer getEmuStatus() desde el hilo de audio es leer un int: es benigno, y a
+     * cambio la conmutacion es inmediata en vez de llevar el frame de retraso
+     * que tendria si conmutase el hilo principal.
+     *
+     * readInto solo lee del anillo; el decodificado ocurre en el hilo principal
+     * (MusicPlayer::update). */
+    /* La condicion NO es solo "toca musica": tambien se sigue leyendo mientras
+     * la rampa no haya llegado abajo.  Si se conmutase en cuanto el estado deja
+     * de pedirla, el fade-out no se oiria nunca -- la fuente cambiaria de golpe
+     * antes de que el volumen bajase, que es justo el corte que el fundido
+     * viene a evitar.  El core, al arrancar, todavia no tiene nada que sonar en
+     * esos 250 ms, asi que no se pierde audio suyo. */
+    if (g_music && g_music->isActive() &&
+        (musicWantedFor(gameMenu->getEmuStatus()) || !g_music->isSilent())) {
+        g_music->readInto(samples, count);
+        return;
+    }
+
+    gameMenu->g_audioBuffer.Read(samples, count);
+}
+
+/**
+*
+*/
+/* Abre el dispositivo de audio.  Se llama UNA vez por sesion, desde el arranque,
+ * con AUDIO_DEVICE_RATE: no se reabre al cargar juegos ni cuando un core pide
+ * otra tasa.  De adaptar la tasa del core a la del dispositivo se encarga
+ * AudioRateControl (audio/audiorate.h). */
+void init_sdl_audio(double sample_rate) {
+	LOG_DEBUG("init_sdl_audio %.1f\n", sample_rate);
+    SDL_AudioSpec wanted, obtained;
+    wanted.freq = (int)sample_rate;
+    wanted.format = AUDIO_S16SYS;
+    wanted.channels = 2;
+	#ifdef WIN
+	wanted.samples = 1024;
+	#elif defined(_XBOX)
+	wanted.samples = 1024; 
+	#endif
+    wanted.callback = sdl_audio_callback;
+
+#ifdef AUDIO_LOG
+    {
+        char buf[128];
+        _snprintf(buf, sizeof(buf),
+            "[AUDIO_INIT] rate=%d samples=%d buffer=%d callback_ms=%.1f",
+            wanted.freq, wanted.samples, BUFF_SIZE,
+            (float)wanted.samples / (float)wanted.freq * 1000.0f);
+        OutputDebugStringA(buf);
+    }
+#endif
+
+    /* Con `obtained` en vez de NULL: SDL nos dice a que tasa quedo abierto de
+     * verdad.  Es el fallback de todo el diseno -- si el driver no da la tasa
+     * pedida, el resampler se ajusta a la real y el tono sigue siendo correcto,
+     * en vez de sonar desafinado por un desajuste invisible. */
+    memset(&obtained, 0, sizeof(obtained));
+    if (SDL_OpenAudio(&wanted, &obtained) < 0) {
+		string error = "Error SDL Audio: " + string(SDL_GetError());
+        LOG_ERROR("%s\n", error.c_str());
+        return;
+    }
+	audio_opened = 1;
+	g_audio_device_rate = (obtained.freq > 0) ? obtained.freq : wanted.freq;
+	if (g_audio_device_rate != wanted.freq) {
+		LOG_INFO("Audio: se pidio %d Hz y el driver abrio %d Hz; el resampler usa la tasa real\n",
+			wanted.freq, g_audio_device_rate);
+	}
+	LOG_INFO("Audio: dispositivo abierto a %d Hz (una sola vez por sesion)\n", g_audio_device_rate);
+    SDL_PauseAudio(0); // Inicia el audio
+}
+
+/**
+*
+*/
+std::string initPathAndLog(char** argv){
+	logger = new Logger(LOG_PATH);
+
+	#if defined(WIN) || defined(DOS) || defined(_XBOX)
+		Constant::tempFileSep[0] = '\\';
+	#else if defined(UNIX)
+		Constant::tempFileSep[0] = '/';
+	#endif
+
+	#ifdef _XBOX
+		Constant::setAppDir(dir.getDirActual() + string(EMU_LIB_NAME) + ".xex");
+	#else
+		Constant::setAppDir(argv[0]);
+	#endif	
+
+	std::size_t pos = Constant::getAppDir().rfind(Constant::getFileSep());
+	if (pos != string::npos && pos < Constant::getAppDir().length()){
+		Constant::setAppExecutable(Constant::getAppDir().substr(pos + 1));
+	}
+
+    Constant::setAppDir(Constant::getAppDir().substr(0, pos));
+    if (!dir.dirExists(Constant::getAppDir().c_str()) || pos == string::npos){
+        Constant::setAppDir(dir.getDirActual());
+    }
+
+	Constant::setExecMethod(launch_spawn);
+
+	LOG_DEBUG("Directorio de app: %s\n", Constant::getAppDir().c_str());
+	LOG_DEBUG("Ejecutable: %s\n", Constant::getAppExecutable().c_str());
+	g_excp_emulator_path = Constant::getAppExecutable();
+	return Constant::getAppDir();
+}
+
+void closeGame(){
+	if (gameMenu->romLoaded){
+		/* IMPORTANTE: NO cerrar el dispositivo de audio entre cargas.
+		 *
+		 * SDL 1.2 en Xbox 360 (libSDLx360) tiene un bug en el ciclo
+		 * SDL_OpenAudio / SDL_CloseAudio: tras varias iteraciones, el
+		 * proximo SDL_OpenAudio se cuelga silenciosamente y arrastra
+		 * todo el frontend.  Dado que PSX siempre es 44100 Hz estereo
+		 * S16 y el formato no cambia entre juegos, no hace falta
+		 * reabrir.  Estrategia:
+		 *   1. Pausar el callback de audio (SDL_PauseAudio(1)).
+		 *   2. Delay para dar tiempo a que el callback termine la
+		 *      ultima iteracion (no haya races con el AudioBuffer).
+		 *   3. Limpiar el AudioBuffer para que el siguiente juego no
+		 *      oiga residuos del anterior.
+		 *   4. Mantener audio_opened=1 — el device sigue vivo.
+		 * En launchGame se reanuda con SDL_PauseAudio(0). */
+		if (audio_opened) {
+			audio_closing = true;
+			SDL_PauseAudio(1);
+			SDL_Delay(50);
+			gameMenu->g_audioBuffer.Clear();
+			audio_closing = false;
+			/* audio_opened se mantiene a 1: el device sigue abierto,
+			 * solo pausado.  En la siguiente carga se reanuda. */
+		}
+		/* Bloque a medias de la ruta de muestra suelta: si no se vacia, el
+		 * proximo juego empieza oyendo la cola del anterior. */
+		g_singleSampleFrames = 0;
+		gameMenu->g_audioRate.reset();
+		/* Notas MIDI colgadas: el core se va sin mandar los note-off, asi que si
+		 * no se cortan aqui el proximo juego arranca con el acorde del anterior.
+		 * El soundfont NO se descarga: es el mismo para toda la sesion y
+		 * releerlo en cada carga seria un tiron en la 360 (mismo criterio que la
+		 * musica de menu). */
+		gameMenu->g_midi.panic();
+		g_midiFastForwardCut = false;
+#ifndef NO_SRAM
+		gameMenu->statesSram.saveSram(romPaths.sram.c_str());
+#endif
+
+		// Multi-disc: persistir indice del disco actual para la proxima carga
+		if (!g_currentRompath.empty() && disk_control.get_num_images &&
+		    disk_control.get_num_images() > 1 && disk_control.get_image_index) {
+			saveLastDiscIndex(g_currentRompath, disk_control.get_image_index());
+		}
+		g_currentRompath.clear();
+
+		//Liberar recursos de libretro
+		 // 1. Limpieza total del juego anterior
+		// Cheats: limpiar (retro_cheat_reset) ANTES de descargar el core, con este aun
+		// cargado, para que no queden cheats activos al cargar el siguiente juego.
+		CheatManager::instance()->clear();
+
+		retro_unload_game();
+		retro_deinit();
+		gameMenu->romLoaded = false;
+
+		/* El banco MIDI se suelta con el core: el proximo juego lo volvera a
+		 * pedir si lo necesita.  Aqui ya no queda nadie del lado de la
+		 * emulacion que pueda estar dentro de render(). */
+		gameMenu->g_midi.close();
+		gameMenu->g_midi.resetSongState();   /* el siguiente juego no hereda la cancion */
+
+		/* De vuelta al menu: reanudar el dispositivo, que el bloque de audio de
+		 * arriba dejo pausado.  No hay que recargar nada -- la musica sigue en
+		 * memoria y continua donde se quedo; de elegir fuente ya se encarga
+		 * musicWantedFor(estado) en el callback. */
+		if (audio_opened && g_music && g_music->isActive()) {
+			SDL_PauseAudio(0);
+		}
+
+		/* Descartar los descriptores capturados via SET_MEMORY_MAPS:
+		 * sus punteros apuntan a RAM interna del core que acaba de
+		 * liberarse en retro_deinit().  Si el proximo juego/core no
+		 * vuelve a emitir SET_MEMORY_MAPS (caso NeoGeo tras NeoGeo CD
+		 * en FBNeo) heredariamos punteros colgantes y Achievements::
+		 * read_memory haria memcpy sobre memoria invalida. */
+		g_num_mem_descriptors = 0;
+		memset(g_mem_descriptors, 0, sizeof(g_mem_descriptors));
+	}
+}
+
+/**
+*
+*/
+int launchGame(std::string rompath, bool tmpDelete){
+	// Reset de la rotacion antes de arrancar el core: si el nuevo core no llama
+	// a RETRO_ENVIRONMENT_SET_ROTATION, asumimos orientacion estandar (0 grados).
+	g_screen_rotation = 0;
+
+	/* Modo "BIOS only": el frontend nos pasa el centinela "@bios-only"
+	 * para arrancar la consola sin disco.  El core debe haber anunciado
+	 * RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME en retro_set_environment.
+	 * En este modo saltamos toda la cadena de decompresion / lectura
+	 * de fichero y llamamos retro_load_game(NULL) directamente. */
+	const bool bios_only = rompath.compare(BIOS_ONLY) == 0;
+	const std::string displayName = bios_only ? std::string("BIOS") : dir.getFileName(rompath);
+
+	std::string initMsg = LanguageManager::instance()->get("msg.loading") + displayName + "...";
+	const int face_h_big = Fonts::getLineSkip(Fonts::FONTBIG);
+	gameMenu->fillOverlay(clBackground);
+	Fonts::drawTextCentTransparent(gameMenu->overlay, Fonts::getFont(Fonts::FONTBIG), initMsg.c_str(), 0, -face_h_big / 2, true, true, Constant::colors[clWhite].sdlColor, 0);
+	salviaFlip(gameMenu->gameScreen);
+
+	// [XBOX360] Opciones de core POR JUEGO: si existe <juego>.opt junto al juego,
+	// aplicarlas ANTES de extractAndLoadGame -> retro_load_game, para que el core
+	// las lea en su primera pasada (incluye init-only). Si no hay, se (re)aplican
+	// las generales del core.
+	if (!bios_only)
+		gameMenu->getCfgLoader()->loadCoreParamsForGame(rompath);
+
+	// Sincronizacion al iniciar el core: el override del core si no esta en
+	// Auto, si no la general. Solo aqui; despues manda lo que el usuario elija
+	// en el menu de emulacion (GestorMenus::selectSync).
+	gameMenu->getCfgLoader()->current_video_settings.sync_type = gameMenu->getCfgLoader()->effectiveSyncType();
+
+	//Cargamos el juego en memoria o lo extraemos al disco
+	bool gameLoaded = extractAndLoadGame(rompath, tmpDelete);
+	if(!gameLoaded) {
+		LOG_ERROR("Error cargando la ROM\n");
+		gameMenu->showLangSystemMessage("msg.romopenerror", 3000);
+		g_currentRompath.clear();
+		return 0;
+	}
+
+
+	// En BIOS-only usamos el centinela como rom path: setRomPaths
+	// genera "@bios-only.sav" y "@bios-only.srm" coherentes para que
+	// los savestates del shell de la BIOS no machaquen ningun juego.
+	gameMenu->setRomPaths(rompath);
+
+	// Cheats: importar el .cht del juego (formato RetroArch) y aplicarlo al core.
+	// Solo se pasan codigos que el core decodifica (retro_cheat_set). En cores que
+	// dejan esa funcion vacia (pcsxr-360, beetle-vb, 3dox/opera, dosbox...) es no-op.
+	// Cargar la lista de cheats del .cht (formato RetroArch). Arrancan TODOS
+	// desactivados y NO se aplica nada en la carga (como RetroArch con "Apply Cheats
+	// After Load" desactivado): el usuario los activa a mano desde el menu, ya con el
+	// juego arrancado, y se aplican al instante (sApplyCheats). Asi no se parchea la
+	// ROM antes de su checksum de arranque, que colgaba a juegos como Sonic 1.
+	CheatManager::instance()->loadFromFile(resolveCheatPath(romPaths.cht));
+	gameMenu->configMenus->poblarCheats(gameMenu->getCfgLoader());
+
+	gameMenu->joystick->updateTypes();
+
+	//Giving a name to the window
+	const std::string captionName = bios_only ? std::string("BIOS") : dir.getFileNameNoExt(rompath);
+	std::string romname = (gameMenu->getCfgLoader()->getCfgEmu() != NULL ? gameMenu->getCfgLoader()->getCfgEmu()->name + " - " : "") + captionName;
+	SDL_WM_SetCaption(romname.c_str(), NULL);
+
+	// Antes de cargar el juego, el core dice su frecuencia en retro_get_system_av_info
+	struct retro_system_av_info av_info = gameMenu->getAvInfo();
+
+	//Poblamos la lista de cdroms si aplica
+	if (g_hasDiskControl){
+		if (!bios_only) {
+			gameMenu->configMenus->poblarCdList(rompath);
+		} else {
+			std::string execActual = Constant::getAppExecutable();
+			ConfigEmu* cfgEmu = gameMenu->getCfgLoader()->findCfgEmu(execActual);
+			if (cfgEmu != NULL){
+				LOG_DEBUG("Roms dir %s\n", cfgEmu->rom_directory.c_str());
+				std::string cdromsPath = dirutil::getPathPrefix(cfgEmu->rom_directory + Constant::getFileSep() + BIOS_ONLY, CfgLoader::configMain[cfg::roms_path].valueStr);
+				gameMenu->configMenus->poblarCdList(cdromsPath);
+			}
+		}
+	}
+
+	//Obtener el aspect ratio
+	aspectRatioValues[RATIO_CORE] = av_info.geometry.aspect_ratio;
+	//Iniciando el contador de fps
+	gameMenu->sync->init_fps_counter((float)av_info.timing.fps);
+	//Iniciando el sistema de audio
+	initGameAudio(av_info.timing.sample_rate);
+	/* Semilla de la guarda de delta del recheck: lo que el core declara al
+	 * cargar es la referencia contra la que se compara si luego cambia. */
+	g_applied_core_fps         = av_info.timing.fps;
+	g_applied_core_sample_rate = av_info.timing.sample_rate;
+	g_recheck_avinfo_pending   = false;
+	gameMenu->romLoaded = true;
+	//Deshabilitamos el fast forward si estaba a true y restauramos el vsync por defecto
+	if (gameMenu->current_fast_forward){
+		gameMenu->current_fast_forward = false;
+		/* Por Sync, igual que el manejador de la hotkey: el vsync tiene un
+		 * segundo dueno (el adaptativo de limit_fps) y llamar a
+		 * SDL_XBOX_SetVSync directo dejaria su espejo `vsyncOn` mintiendo, con
+		 * lo que el adaptativo podria "apagar" un vsync ya apagado o no
+		 * apagar el que si esta encendido. */
+		gameMenu->sync->set_vsync_permitido(true);
+	}
+
+	// Lista de partidas guardadas y SRAM solo si hay juego real cargado.
+	// En BIOS-only no aplica: el shell de la BIOS solo gestiona memory
+	// cards, que el core ya ha cargado via Config.Mcd1/2 en emu_setup.
+	if (!bios_only) {
+		gameMenu->configMenus->poblarPartidasGuardadas(gameMenu->getCfgLoader(), rompath);
+		gameMenu->statesSram.loadSram(romPaths.sram.c_str());
+	}
+
+	SDL_FillRect(gameMenu->gameScreen, NULL, Constant::colors[clBackground].color);
+	gameMenu->clearOverlay();
+	gameMenu->setEmuStatus(EMU_STARTED);
+	//We can reload the emulator if an exception is found from this point over
+	g_start_from_exception = false;
+
+#ifdef WATCH_LOAD_STUCK
+	watchForLoadingStuck();
+#endif
+	return 1;
+}
+
+std::string g_peekedLaunchRom;
+
+bool loadGameAtStart(int argc, char *argv[]){
+	LOG_DEBUG("argc: %d\n", argc);
+	bool ret = false;
+	std::string romToLaunch;
+
+	#ifdef _XBOX
+		if (!g_peekedLaunchRom.empty()){
+			romToLaunch = g_peekedLaunchRom;
+		} else {
+			DWORD dwLaunchDataSize = 0;    
+			DWORD dwStatus = XGetLaunchDataSize( &dwLaunchDataSize );
+			if( dwStatus == ERROR_SUCCESS && dwLaunchDataSize > 0 ){
+				BYTE* pLaunchData = new BYTE [ dwLaunchDataSize ];
+				if (XGetLaunchData( pLaunchData, dwLaunchDataSize ) == ERROR_SUCCESS){
+					romToLaunch = (char*)pLaunchData;
+				}
+				delete[] pLaunchData;
+			} else if (dwStatus == ERROR_NOT_FOUND) {
+				// El programa se lanzo normalmente (sin XSetLaunchData)
+				LOG_DEBUG("No se encontraron datos de lanzamiento.\n");
+			}
+		}
+		if (!romToLaunch.empty()){
+			LOG_DEBUG("Parametros recibidos: %s\n", romToLaunch.c_str());
+			//If we come from an exception, don't launch anything
+			if (START_FROM_EXCEPTION.compare(romToLaunch) == 0){
+				LOG_DEBUG("Starting emulator from a previous exception");
+				g_start_from_exception = true;
+			} else {
+				ret = launchGame(romToLaunch) == 1;	
+			}
+		}
+	#else 
+		if (argc > 1){
+			romToLaunch = argv[1];
+			LOG_DEBUG("argv[1]: %s\n", argv[1]);
+			ret = launchGame(argv[1]) == 1;
+		}
+	#endif	
+
+	if (ret){
+		gameMenu->setEmuStatus(EMU_STARTED);
+		//Setting the romname to the Faqs downloader menu
+		gameMenu->configMenus->setGameLoaded(romToLaunch);
+	}
+	
+	return ret;
+}
+
+
+
+inline void updateGame() {
+    #ifndef NO_SRAM
+	const Uint32 currentTime = SDL_GetTicks();
+    // Verificamos si ha pasado el intervalo desde el ultimo guardado
+	if (currentTime - gameMenu->statesSram.saveContext.lastSramSaved >= INTERVAL_SRAM_SAVE) {
+        gameMenu->statesSram.saveSram(romPaths.sram.c_str());
+        gameMenu->statesSram.saveContext.lastSramSaved = currentTime;
+    }
+	#endif
+	// retro_run hace todo: 
+	// 1. Llama a input_poll() -> update_input()
+	// 2. Calcula la logica del juego
+	// 3. Llama a audio_batch() -> (Aqui el audio bloquea si va muy rapido)
+	// 4. Llama a video_refresh() -> (Aqui se dibuja el frame y los FPS)
+	/* Ocupacion del anillo de audio del frontend.  Se calcula SIEMPRE, no solo
+	 * cuando el core registro `audio_status_cb` (Xenon64 no lo registra),
+	 * porque el vsync adaptativo la necesita como SENAL: es la unica que
+	 * distingue "el core no llega" cuando el periodo de frame SI se cumple.
+	 *
+	 * Ese caso es real y es el del hilo grafico asincrono de Xenon64: el video
+	 * va a 60 VI/s -o sea que `dtAvg` esta clavado en el objetivo y el criterio
+	 * de periodo no ve nada- y en cambio el audio sale al 70%, porque el
+	 * invitado no consigue su ranura para la tarea de audio.  Si el core
+	 * entrega menos audio del que el tiempo real consume, el anillo se seca:
+	 * eso se ve aqui y en ningun otro sitio del frontend. */
+	{
+		const size_t cap  = gameMenu->g_audioBuffer.getCapacity();
+		const size_t fill = gameMenu->g_audioBuffer.getUsed();
+		const unsigned occupancy = cap ? (unsigned)(fill * 100 / cap) : 0;
+
+		if (cap)
+			gameMenu->sync->note_audio_ocupacion(occupancy);
+
+		// Notificar al core el estado del buffer de audio (para frameskip)
+		if (audio_status_cb)
+			audio_status_cb(true, occupancy, fill < cap / 4);
+
+		/* La tasa real del dispositivo, que publica el hilo de audio cada 10 s.
+		 * Se saca aqui y no alli para no bloquear el callback en el fichero de
+		 * log.  Solo cuando cambia, asi que en regimen son cuatro lineas por
+		 * minuto como mucho. */
+		{
+			static unsigned int ultima = 0;
+			const unsigned int mhz = g_audio_dev_rate_mhz;
+
+			if (mhz != 0 && mhz != ultima) {
+				const double real = (double)mhz / 1000.0;
+				const double nom  = (double)g_audio_device_rate;
+				ultima = mhz;
+
+				/* FASE 3: la alimentacion directa del resampler usa la tasa
+				 * MEDIDA, no la declarada.  Es correccion gratis, y es la unica
+				 * que el DRC no puede hacer sin gastar su autoridad. */
+				gameMenu->g_audioRate.setDeviceRateMeasured(real);
+
+				//LOG_INFO("Sync: dispositivo de audio -> declarado %.0f Hz | medido %.3f Hz | desvio %+.3f%% | anillo %u%% | ratio %.5f\n",
+				//	nom, real,
+				//	(nom > 0.0) ? ((real / nom - 1.0) * 100.0) : 0.0,
+				//	occupancy, gameMenu->g_audioRate.getBaseRatio());
+			}
+		}
+	}
+	retro_run();
+
+	/* Ancla la FASE del muestreo del DRC.  A partir de aqui, el primer
+	 * lote de audio del frame siguiente recomputa el ratio, y los demas reusan
+	 * el ya calculado.  Sin esto el controlador se muestreaba una vez por LOTE
+	 * -varias veces por frame, con fase distinta cada vez- y eso mete ruido en
+	 * un lazo cuya constante de tiempo es de un frame.  Ver `processAndWrite`. */
+	gameMenu->g_audioRate.frameEnd();
+
+	/* Red de seguridad: si el usuario cambio una core-option en este frame, el
+	 * core ya la proceso dentro del retro_run de arriba y puede haber cambiado
+	 * su temporizado sin emitir SET_SYSTEM_AV_INFO (caso nestopia al forzar la
+	 * region: cambia fps 50<->60 pero no lo notifica, y el limitador se
+	 * quedaria capado a la tasa anterior).  Reconsultamos av_info y solo
+	 * reaplicamos si de verdad cambio, para no reiniciar el warmup del
+	 * resampler en cada cambio de cualquier otra opcion. */
+	if (g_recheck_avinfo_pending){
+		g_recheck_avinfo_pending = false;
+		struct retro_system_av_info av = gameMenu->getAvInfo();
+		/* Diferencia absoluta a mano para no depender de <cmath> (VS2010). */
+		double dfps  = av.timing.fps - g_applied_core_fps;
+		double drate = av.timing.sample_rate - g_applied_core_sample_rate;
+		if (dfps  < 0.0) dfps  = -dfps;
+		if (drate < 0.0) drate = -drate;
+		bool fps_chg  = dfps > 0.01;
+		bool rate_chg = av.timing.sample_rate > 0.0 && drate > 0.5;
+		if (fps_chg || rate_chg){
+			LOG_INFO("av_info refrescado tras cambio de opciones: fps %.4f -> %.4f, rate %.1f -> %.1f\n",
+				g_applied_core_fps, av.timing.fps,
+				g_applied_core_sample_rate, av.timing.sample_rate);
+			applyCoreAvInfo(av);
+		}
+	}
+}
+
+void processFrontendEvents(){
+	// Procesamos el teclado virtual de Xbox (si hay uno pendiente)
+	SOUtils::updateKeyboard();
+	
+	//Procesamos las hotkeys
+	HOTKEYS_LIST hotkey = gameMenu->joystick->findHotkey();
+	gameMenu->processFrontendEvents(hotkey);
+}
+
+void closeResources() {
+	closeGame();
+
+	/* Musica: parar el dispositivo ANTES de destruir el reproductor, o el
+	 * callback podria entrar a leer un anillo que ya no existe.  El destructor
+	 * de MusicPlayer espera a su hilo de IO_THREAD antes de soltar nada. */
+	if (audio_opened) SDL_PauseAudio(1);
+	if (g_music) {
+		delete g_music;
+		g_music = NULL;
+	}
+	/* El sintetizador es miembro de Engine, no hace falta borrarlo; pero el
+	 * banco son varios MB y se suelta aqui, con el audio ya parado. */
+	gameMenu->g_midi.close();
+
+	Scrapper::ShutdownScrapper();
+    if (conversion_buffer != NULL) {
+        free(conversion_buffer);
+        conversion_buffer = NULL; // Importante ponerlo a NULL tras liberar
+        buffer_size = 0;
+    }
+    if (rotation_buffer != NULL) {
+        free(rotation_buffer);
+        rotation_buffer = NULL;
+        rotation_buffer_size = 0;
+    }
+
+	gameMenu->statesSram.deinitSaveSystem();
+	Launcher::unmountAll();
+	CurlClient curlClient;
+	curlClient.close();
+
+	delete logger;
+	delete listMenu;
+	delete gameMenu;
+	delete cfgLoader;
+}
+
+static void __declspec(noinline) printAndDelay(){
+	const int face_h_big = Fonts::getLineSkip(Fonts::FONTBIG);
+	gameMenu->fillOverlay(clBackground);
+	Fonts::drawTextCentTransparent(gameMenu->overlay, Fonts::getFont(Fonts::FONTBIG), LanguageManager::instance()->get("msg.error.fatal").c_str(), 0, -face_h_big / 2, true, true, Constant::colors[clWhite].sdlColor, 0);
+	salviaFlip(gameMenu->gameScreen);
+	SDL_Delay(3000);
+
+	//We don't want the emulator restarting over and over if an exception is thrown previously, 
+	//without starting a new game. The g_start_from_exception flag is cleared when the game is loaded
+	if (!g_start_from_exception){
+		Launcher launch;
+		std::string pams = START_FROM_EXCEPTION;
+		launch.launchXboxWin(Constant::getAppDir() + Constant::getFileSep() + Constant::getAppExecutable(), pams);
+	}
+}
+
+/*  runGameLoop — extracted into its own function so __try does not
+ *  share a stack frame with C++ objects that have destructors.
+ *  MSVC error C2712 forbids SEH __try in any function that requires
+ *  C++ object unwinding. */
+static void __declspec(noinline) runGameLoop() {
+	//__try {
+		while (gameMenu->running) {
+			processFrontendEvents();
+
+			/* Musica de menu: aqui SOLO se abre o cierra el grifo.  El
+			 * decodificado corre en su propio hilo (IO_THREAD), porque cuando
+			 * vivia aqui la musica se cortaba en cuanto el menu tardaba en
+			 * listar ficheros -- el escaneo bloquea este hilo y el anillo se
+			 * vaciaba.  Mismo predicado que usa el callback para elegir fuente,
+			 * asi no pueden discrepar. */
+			if (g_music) {
+				g_music->setWanted(musicWantedFor(gameMenu->getEmuStatus()));
+
+				/* Cambio de listado (L/R) o cualquier otra via que cambie el
+				 * core activo: se detecta por el indice y no enganchando el
+				 * manejador de L/R, porque loadEmuCfg se llama desde cuatro
+				 * sitios y asi no se queda ninguno fuera.  Comparar un int por
+				 * frame es gratis; resolver la ruta solo se hace al cambiar. */
+				static int lastEmuCfgPos = -1;
+				if (cfgLoader->emuCfgPos != lastEmuCfgPos) {
+					lastEmuCfgPos = cfgLoader->emuCfgPos;
+					applyMenuMusic();
+				}
+			}
+
+			switch (gameMenu->getEmuStatus()){
+				case EMU_STARTED:
+					updateGame();
+					/* Despues de updateGame para quedar ENCIMA de los contadores de
+					 * FPS/memoria: el solape es un rect pequeno que sigue al raton y
+					 * los contadores se redibujan cada frame, asi que lo peor que
+					 * puede pasar es un parpadeo de un frame en ellos. */
+					gameMenu->drawLightgunCrosshair();
+					break;
+				case EMU_MENU:
+				case EMU_MENU_FILTER:
+				case EMU_MENU_IMAGE_VIEWER:
+					updateMenuScreen(tileMap, gameMenu, *listMenu);
+					break;
+				case EMU_MENU_OVERLAY:
+					updateMenuOverlay(gameMenu, *listMenu);
+					break;
+			}
+
+			gameMenu->processFrontendEventsAfter();
+
+			/* Se presenta en cuanto el frame esta listo y la espera del
+			 * limitador va DESPUES: asi la latencia de input es la minima.
+			 * (Probado el orden contrario -esperar y luego presentar- para
+			 * equiespaciar las presentaciones: sin diferencia apreciable ni con
+			 * vsync ni sin el, asi que no compensa la latencia de mas.) */
+			const double flipIni = Constant::getTicks();
+			salviaFlip(gameMenu->gameScreen);
+			const double flipEnd = Constant::getTicks();
+			gameMenu->sync->note_flip(flipEnd - flipIni);
+			gameMenu->sync->note_present(flipEnd);
+			gameMenu->sync->limit_fps(nextFrameTime, cfgLoader->current_video_settings.sync_type, gameMenu->gameTicks);
+		}
+	//} __except (EXCEPTION_EXECUTE_HANDLER) {
+	//	printAndDelay();
+	//	LOG_ERROR("FATAL: Unhandled exception");
+	//}
+}
+
+/**
+*
+*/
+int main(int argc, char *argv[]) {
+	initPathAndLog(argv);
+
+	/* Los shaders se descubren en assets\shaders ANTES de construir CfgLoader:
+	 * la configuracion guarda el shader por NOMBRE de preset y necesita
+	 * resolverlo a indice al cargar. Aqui solo se enumera y se parsea (no toca
+	 * D3D); la publicacion al backend de video ocurre en engine.cpp. */
+	ShaderRegistry::instance()->load();
+
+	cfgLoader = new CfgLoader();
+
+	if (cfgLoader->isDebug()){
+		#ifndef DEBUG_LOG
+		#define DEBUG_LOG
+		#endif
+        logger->errorLevel = L_DEBUG;
+    }
+
+	LOG_DEBUG("appdir: %s\n", Constant::getAppDir().c_str());
+	LOG_DEBUG("appexe: %s\n", Constant::getAppExecutable().c_str());
+	gameMenu = new GameMenu(cfgLoader);
+
+	/* Dispositivo de audio: se abre AQUI, una sola vez, a tasa fija, y ya no se
+	 * vuelve a abrir en toda la sesion (el ciclo SDL_OpenAudio/SDL_CloseAudio
+	 * cuelga libSDLx360 en la 360).  Cada core entrega a su tasa y AudioRateControl
+	 * la adapta.
+	 *
+	 * Tiene que ir despues de crear gameMenu: sdl_audio_callback lee
+	 * gameMenu->g_audioBuffer.  Se deja PAUSADO hasta que haya juego, que es el
+	 * mismo ciclo de siempre (closeGame pausa, initGameAudio reanuda). */
+	init_sdl_audio(AUDIO_DEVICE_RATE);
+
+	/* Musica de menu.  Si carga, el dispositivo se queda SONANDO (antes se
+	 * pausaba hasta que hubiera juego); si no hay fichero o no decodifica, se
+	 * pausa como siempre y el frontend arranca igual: quedarse sin musica no
+	 * puede impedir usar el programa. */
+	if (audio_opened) {
+		/* Pausado de partida: applyMenuMusic() lo reanuda si de verdad hay
+		 * cancion que poner. */
+		SDL_PauseAudio(1);
+
+		g_music = new MusicPlayer();
+		/* Volumen ANTES de cargar: load() calcula el destino de la rampa a
+		 * partir de el, asi que ponerlo despues dejaria la primera reproduccion
+		 * al 100% hasta el primer cambio de estado. */
+		g_music->setVolume(cfgLoader->configMain[cfg::musicVolume].valueInt * 10);
+
+		/* La cancion la elige applyMenuMusic segun el core activo, con la
+		 * general como respaldo; ya no hay ruta fija en el codigo. */
+		applyMenuMusic();
+	}
+
+	/* El SoundFont NO se abre aqui: se abre cuando un core pide el interface
+	 * MIDI (ver RETRO_ENVIRONMENT_GET_MIDI_INTERFACE).  Un banco ocupa en RAM el
+	 * doble de lo que pesa el fichero, y los hay de 50 MB: no se van a reservar
+	 * para una sesion que a lo mejor solo toca la Master System. */
+
+	listMenu = new ListMenu(gameMenu->overlay->w, gameMenu->overlay->h);
+	listMenu->setLayout(LAYBOXES, gameMenu->overlay->w, gameMenu->overlay->h);
+    tileMap.load(Constant::getAppDir() + Constant::getFileSep() + "assets" + Constant::getFileSep() + "art" + Constant::getFileSep() + "bricks2.png");
+	initializeMenus(*listMenu, *gameMenu, *cfgLoader);
+	
+	//Callback de environment
+	retro_set_environment(retro_environment);
+	//Registrar callback de video
+    retro_set_video_refresh(retro_video_refresh);
+	//Registrar los callbacks de inputs
+    retro_set_input_poll(retro_input_poll);
+    retro_set_input_state(retro_input_state);
+	// Registrar los callbacks de audio
+	retro_set_audio_sample(retro_audio_sample);
+	retro_set_audio_sample_batch(retro_audio_sample_batch);
+
+	if (loadGameAtStart(argc, argv)){
+		gameMenu->clearOverlay();
+	}
+
+	ConfigEmu *emu = cfgLoader->getCfgEmu();
+	gameMenu->keyb->setKeyboardLayout(emu->keyboard_type, gameMenu->overlay->w, gameMenu->overlay->h);
+	gameMenu->statesSram.initSaveSystem();
+	CurlClient curlClient;
+	curlClient.init();
+
+	if (curlClient.getNetInitStat() == NET_NONE){
+		gameMenu->showLangSystemMessage("msg.network.none", 3000);
+	} else if (curlClient.getNetInitStat() == NET_ERROR_IP){
+		gameMenu->showLangSystemMessage("msg.network.noip", 3000);
+	} else if (curlClient.getNetInitStat() == NET_ERROR_WSA){
+		gameMenu->showLangSystemMessage("msg.network.wsa", 3000);
+	} else if (curlClient.getNetInitStat() == NET_ERROR_WINSOCK){
+		gameMenu->showLangSystemMessage("msg.network.winsock", 3000);
+	}
+
+	nextFrameTime = Constant::getTicks();
+	//Estado inicial del fondo HLSL: el constructor fija EMU_MENU directo,
+	//saltandose setEmuStatus, asi que lo sincronizamos aqui una vez.
+	gameMenu->applyMenuBackground();
+	runGameLoop();
+	closeResources();
+    return 0;
+}
