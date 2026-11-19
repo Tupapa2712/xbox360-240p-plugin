@@ -146,7 +146,7 @@ build.bat
 
 Everything in this project (`t240.xex` and `240p Dream`) is — and will always remain — **100% free and open-source**.
 
-If this brought authentic 240p scanlines to your CRT and you'd like to buy me a coffee to support future native 240p CRT research on other consoles (**PS2, PS3, Original Xbox**), you can do so here:
+If this brought authentic 240p scanlines to your CRT and you'd like to buy me a coffee to support future native 240p CRT research on other consoles (**PS3, Wii U, Original Xbox**), you can do so here:
 
 <p align="center">
   <a href="https://ko-fi.com/tupapa2712"><strong>Support tupapa2712 on Ko-fi (ko-fi.com/tupapa2712)</strong></a>
