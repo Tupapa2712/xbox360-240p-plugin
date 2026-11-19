@@ -57,7 +57,7 @@ This free, open-source project unlocks **real 240p progressive output** on Xbox 
    * Save and **reboot** your console.
 3. **Install `240p Dream`:**
    * Copy the `240p Dream` folder to your emulators directory (e.g., `Hdd:\Emulators\240p Dream\`).
-   * Place your games inside `roms\<system>\`.
+   * **Important — BIOS & ROMs are NOT included:** You must obtain your own BIOS files and games separately. Place required BIOS files inside `240p Dream\system\` (for systems that require a BIOS to boot) and your games inside `240p Dream\roms\<system>\`.
    * Scan your content paths in **Aurora** — box art, banner, background, icon, and description will load automatically.
 
 ### Quick Controls
