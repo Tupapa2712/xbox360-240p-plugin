@@ -40,25 +40,35 @@ This free, open-source project unlocks **real 240p progressive output** on Xbox 
 
 ## Easy Setup & How to Use
 
-### What you need
-- An **Xbox 360 with RGH** (Kernel **`17559`**)
-- A **CRT TV** connected via **Component, SCART, or AV** cable (Xbox display settings set to **480i**)
-- **DashLaunch** and **Aurora Dashboard**
+### What You Need
+* **Xbox 360 with RGH** (Kernel 17559)
+* **CRT TV** connected via Component, SCART, or AV cable (set Xbox display to **480i**)
+* **DashLaunch** and **Aurora Dashboard**
 
 > **Note:** No copyrighted ROMs, BIOS files, or Xbox 360 SDK files are included. Bring your own legally dumped games and BIOS files.
 
 ### 3-Step Installation
-1. **Download the files** from the [**Releases page**](https://github.com/Tupapa2712/xbox360-240p-plugin/releases) (`t240-v2.22-plugin.zip` and `240p-Dream-v2.22-Complete-NoROMs-NoBIOS.zip`, or the smaller core update pack if you already have `240p Dream`).
-2. **Install the `t240.xex` plugin:** Copy `t240.xex` to your console (for example `Hdd:\AuroraLaunch\Plugins\t240.xex`), open **DashLaunch** (or `Hdd:\launch.ini`), add it to a free plugin slot (`plugin3 = Hdd:\AuroraLaunch\Plugins\t240.xex`), save, and reboot your console.
-3. **Install `240p Dream`:** Copy the `240p Dream` folder to your emulators directory (e.g., `Hdd:\Emulators\240p Dream\`), add your ROMs to `roms\<system>\`, and scan your content paths in **Aurora** — cover, banner, background, icon, and description are ready to go.
+1. **Download both files** from the [Releases](https://github.com/Tupapa2712/xbox360-240p-plugin/releases) page:
+   * `t240-v2.22-plugin.zip`
+   * `240p-Dream-v2.22-Complete-NoROMs-NoBIOS.zip`
+2. **Install the `t240.xex` plugin:**
+   * Copy `t240.xex` to your console (e.g., `Hdd:\AuroraLaunch\Plugins\t240.xex`).
+   * Open **DashLaunch** (or edit `Hdd:\launch.ini`) and add it to a free plugin slot: `plugin3 = Hdd:\AuroraLaunch\Plugins\t240.xex`
+   * Save and **reboot** your console.
+3. **Install `240p Dream`:**
+   * Copy the `240p Dream` folder to your emulators directory (e.g., `Hdd:\Emulators\240p Dream\`).
+   * Place your games inside `roms\<system>\`.
+   * Scan your content paths in **Aurora** — box art, banner, background, icon, and description will load automatically.
 
 ### Quick Controls
-- **In `240p Dream` (Emulators):** Everything is automatic — menus stay in readable **480i**, games launch directly in **240p**. Press **`LB + RB + Select`** to exit a game and return cleanly to the 480i menu.
-- **In Native Xbox 360 / XBLA Games:** Launch the game from Aurora as usual, then hold **`LT + RT + L3 + R3`** inside the game to switch between **240p** and **480i** cleanly at any time.
+| Where | How it Works | Button Combo |
+| :--- | :--- | :--- |
+| **240p Dream (Emulators)** | **100% Automatic.** Menus stay in readable 480i; games launch directly in 240p. | `LB + RB + Select` *(exit game & return to 480i menu)* |
+| **Native Xbox 360 / XBLA** | Launch the game normally from Aurora in 480i, then toggle in-game. | `LT + RT + L3 + R3` *(toggle 240p <-> 480i anytime)* |
 
 ### Two Important Rules (v2.22 Limitations)
-1. **Always keep Aurora in normal mode (480i) before launching native Xbox 360 / XBLA games:** Launching a retail or XBLA title while 240p is already turned on will freeze the loading screen. Enter the game in 480i first, then toggle `LT + RT + L3 + R3`.
-2. **The Xbox Guide button won't open while 240p is active:** Switch back to 480i first using **`LT + RT + L3 + R3`** (or **`LB + RB + Select`** inside `240p Dream`) before opening Guide to exit or shut down normally. If you use the console's physical power button while in 240p, wait **5–10 seconds** while the plugin safely restores 480i and powers down.
+1. **Always keep Aurora in 480i when launching native Xbox 360 / XBLA games.** Launching a retail or XBLA game while 240p is already active will freeze the loading screen. Enter the game in 480i first, then press `LT + RT + L3 + R3`.
+2. **Switch back to 480i before using the Xbox Guide button.** The Guide menu won't open while 240p is active. Toggle back to 480i first (`LT + RT + L3 + R3`, or `LB + RB + Select` in `240p Dream`) to exit or shut down normally. If you press the console's physical power button while in 240p, wait **5–10 seconds** while the plugin safely restores 480i and powers down.
 
 ---
 
@@ -91,7 +101,6 @@ This free, open-source project unlocks **real 240p progressive output** on Xbox 
 | `240p-dream/prebuilt/Snes9x.xex` | `9,289,728` B | `2E97406630C58636F119E59F13A401EBF45DFBADF3E24272CD2A3581D8990AFD` |
 | `240p-dream/prebuilt/Nestopia.xex` | `10,235,904` B | `5AF88FFB055656CB49C5D3BE6A30AC48F3051F9898397C7476AAE4551E007689` |
 | `t240-v2.22-plugin.zip` | `115,467` B | `54F50DBEF1C7B5999E2705E15CB84B0245D5F3145FCC19FAB7F835FC540DF81D` |
-| `240p-Dream-v2.22-Core-Update-and-Aurora-Media.zip` | `41,452,168` B | `DC061A59C5C4E60A19DF09DDA6D8D3638DCE38E6E1A8CB2CCC9AB7E3164964D8` |
 | `240p-Dream-v2.22-Complete-NoROMs-NoBIOS.zip` | `375,394,485` B | `7C32D72B287E9552FCA54F4FDED9B37411FAEA64BFBADBA1405FFC3BB0ABC6DC` |
 
 </details>
