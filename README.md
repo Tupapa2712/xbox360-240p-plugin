@@ -31,7 +31,8 @@ This free, open-source project unlocks **real 240p progressive output** on Xbox 
 
 ## What's Included (v2.22)
 
-- **240p Dream (Retro Emulator):** A CRT-focused modification of **Salvia 360** that automatically switches your TV to true **240p** the moment you start a retro game — with **full 4:3 widescreen fill** (no sidebars) on **SNES** and **NES** — and cleanly switches back to **480i** when you return to the menu (`LB + RB + Select`).
+- **240p Dream (Retro Emulator):** A CRT-focused modification of **Salvia 360** that automatically switches your TV to true **240p** the moment you start a retro game — and cleanly switches back to **480i** when you return to the menu (`LB + RB + Select`).
+- 
 - **`t240.xex` Plugin (For Native Xbox 360 & XBLA Games):** Great for 2D and arcade Xbox 360 titles. Just launch your game normally from Aurora and press **`LT + RT + L3 + R3`** in-game to toggle 240p on or off whenever you want.
 - **Ready for Aurora:** Includes matching Frutiger Aero artwork (front cover, back cover, full 3D box cover, banner, wallpaper, icon, and English metadata) so Aurora displays everything cleanly right after scanning.
 
