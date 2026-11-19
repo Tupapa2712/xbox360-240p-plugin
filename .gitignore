@@ -44,13 +44,15 @@ prompt github.txt
 
 # Copyrighted user data, ROMs, BIOS, saves & runtime caches (NEVER commit)
 # Keep only the empty roms/ directory tree (.gitkeep) and system/BIOS_LIST.txt
-roms/*
-!roms/**/
-!roms/**/.gitkeep
-Roms/
-system/*
-!system/BIOS_LIST.txt
-System/
+/240p-dream/roms/**
+!/240p-dream/roms/**/
+!/240p-dream/roms/**/.gitkeep
+/roms/
+/Roms/
+/240p-dream/system/*
+!/240p-dream/system/BIOS_LIST.txt
+/system/
+/System/
 data/
 shadercache/
 *.smc
