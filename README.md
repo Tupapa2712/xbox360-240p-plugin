@@ -34,7 +34,7 @@ This free, open-source project unlocks **real 240p progressive output** on Xbox 
 - **240p Dream (Retro Emulator):** A CRT-focused modification of **Salvia 360** that automatically switches your TV to true **240p** the moment you start a retro game — and cleanly switches back to **480i** when you return to the menu (`LB + RB + Select`).
   
 - **`t240.xex` Plugin (For Native Xbox 360 & XBLA Games):** Great for 2D and arcade Xbox 360 titles. Just launch your game normally from Aurora and press **`LT + RT + L3 + R3`** in-game to toggle 240p on or off whenever you want.
-- **Ready for Aurora:** Includes matching Frutiger Aero artwork (front cover, back cover, full 3D box cover, banner, wallpaper, icon, and English metadata) so Aurora displays everything cleanly right after scanning.
+- **Ready for Aurora:** Includes matching Y2K metallic/CRT artwork (front cover, back cover, full 3D box cover, banner, wallpaper, icon, and English metadata) so Aurora displays everything cleanly right after scanning.
 
 ---
 
@@ -101,7 +101,7 @@ This free, open-source project unlocks **real 240p progressive output** on Xbox 
 | `240p-dream/prebuilt/Snes9x.xex` | `9,289,728` B | `2E97406630C58636F119E59F13A401EBF45DFBADF3E24272CD2A3581D8990AFD` |
 | `240p-dream/prebuilt/Nestopia.xex` | `10,235,904` B | `5AF88FFB055656CB49C5D3BE6A30AC48F3051F9898397C7476AAE4551E007689` |
 | `t240-v2.22-plugin.zip` | `115,467` B | `54F50DBEF1C7B5999E2705E15CB84B0245D5F3145FCC19FAB7F835FC540DF81D` |
-| `240p-Dream-v2.22-Complete-NoROMs-NoBIOS.zip` | `375,403,051` B | `18072F8208FC3562A1D50E9B80FC3299758DFDAC564408748646F38BFA7EDA89` |
+| `240p-Dream-v2.22-Complete-NoROMs-NoBIOS.zip` | `373,537,222` B | `BE2BDA465419C086C29BDB6B3A060894D0A4EA8ED0A2C11953D023E1FE79210B` |
 
 </details>
 
@@ -131,7 +131,7 @@ This free, open-source project unlocks **real 240p progressive output** on Xbox 
     ├── BIOS_LIST.txt                # Complete list of standard RetroArch BIOS files
     ├── roms/                        # Pre-created empty system subfolders (no ROMs included)
     ├── system/BIOS_LIST.txt         # BIOS reference list (no BIOS files included)
-    └── Media/                       # Frutiger Aero Aurora artwork (cover, front, back, banner, bg, icon)
+    └── Media/                       # Y2K metallic/CRT Aurora artwork (cover, front, back, banner, bg, icon)
 ```
 
 > You do **not** need to compile from source to use this project — ready-to-run downloads are in [**Releases**](https://github.com/Tupapa2712/xbox360-240p-plugin/releases).
