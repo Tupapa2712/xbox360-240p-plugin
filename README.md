@@ -57,7 +57,7 @@ This free, open-source project unlocks **real 240p progressive output** on Xbox 
    * Save and **reboot** your console.
 3. **Install `240p Dream`:**
    * Copy the `240p Dream` folder to your emulators directory (e.g., `Hdd:\Emulators\240p Dream\`).
-   * **Important — BIOS & ROMs are NOT included:** You must obtain your own BIOS files and games separately. Place required BIOS files inside `240p Dream\system\` (for systems that require a BIOS to boot) and your games inside `240p Dream\roms\<system>\`.
+   * **Important — BIOS & ROMs are NOT included:** You must obtain your own BIOS files and games separately. `240p Dream` uses the **exact same standard BIOS files as RetroArch** — place required BIOS files inside `240p Dream\system\` (see **`BIOS_LIST.txt`** inside the emulator ZIP for the full list per system) and drop your games into the pre-created empty folders inside `240p Dream\roms\<system>\`.
    * Scan your content paths in **Aurora** — box art, banner, background, icon, and description will load automatically.
 
 ### Quick Controls
@@ -101,7 +101,7 @@ This free, open-source project unlocks **real 240p progressive output** on Xbox 
 | `240p-dream/prebuilt/Snes9x.xex` | `9,289,728` B | `2E97406630C58636F119E59F13A401EBF45DFBADF3E24272CD2A3581D8990AFD` |
 | `240p-dream/prebuilt/Nestopia.xex` | `10,235,904` B | `5AF88FFB055656CB49C5D3BE6A30AC48F3051F9898397C7476AAE4551E007689` |
 | `t240-v2.22-plugin.zip` | `115,467` B | `54F50DBEF1C7B5999E2705E15CB84B0245D5F3145FCC19FAB7F835FC540DF81D` |
-| `240p-Dream-v2.22-Complete-NoROMs-NoBIOS.zip` | `375,394,485` B | `7C32D72B287E9552FCA54F4FDED9B37411FAEA64BFBADBA1405FFC3BB0ABC6DC` |
+| `240p-Dream-v2.22-Complete-NoROMs-NoBIOS.zip` | `375,403,051` B | `18072F8208FC3562A1D50E9B80FC3299758DFDAC564408748646F38BFA7EDA89` |
 
 </details>
 
@@ -128,6 +128,9 @@ This free, open-source project unlocks **real 240p progressive output** on Xbox 
     ├── salvia.cfg                   # Default English 240p CRT configuration
     ├── retropad.ini                 # Default controller mapping
     ├── default.xml                  # English local Aurora metadata
+    ├── BIOS_LIST.txt                # Complete list of standard RetroArch BIOS files
+    ├── roms/                        # Pre-created empty system subfolders (no ROMs included)
+    ├── system/BIOS_LIST.txt         # BIOS reference list (no BIOS files included)
     └── Media/                       # Frutiger Aero Aurora artwork (cover, front, back, banner, bg, icon)
 ```
 

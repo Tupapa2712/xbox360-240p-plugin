@@ -1,0 +1,131 @@
+===============================================================================
+  240p Dream — Required & Optional BIOS Files List (Standard RetroArch BIOS)
+===============================================================================
+
+IMPORTANT:
+  - NO BIOS files or game ROMs are included in this package.
+  - Because 240p Dream uses standard Libretro cores (fork of Salvia 360),
+    it uses the EXACT SAME BIOS files and filenames as RetroArch!
+  - Obtain your own legally dumped BIOS files and place them inside:
+        240p Dream\system\
+
+Systems that DO NOT require a BIOS (work out of the box with your ROMs):
+  - SNES / Super Famicom (Snes9x2010 / Snes9x)
+  - NES / Famicom (Nestopia — only Famicom Disk System needs disksys.rom)
+  - Sega Mega Drive / Genesis / Master System / Game Gear (Genesis Plus GX)
+  - Game Boy / Game Boy Color (Gambatte)
+  - Virtual Boy (Beetle VB), WonderSwan (Beetle WSwan), Neo Geo Pocket, C64
+
+===============================================================================
+  BIOS FILES BY SYSTEM (place inside 240p Dream\system\)
+===============================================================================
+
+[PlayStation 1 — PCSXR-360]
+  SCPH1001.BIN    (USA)
+  scph101.bin     (PSone)
+  scph5500.bin    (Japan)
+  scph5501.bin    (USA)
+  scph5502.bin    (Europe)
+  scph7001.bin
+  scph7502.bin
+  patches/psx/*.sbi   (Optional PAL copy-protection .sbi files)
+
+[Sega CD / Mega CD & Sega 32X — Genesis Plus GX / PicoDrive]
+  bios_CD_U.bin   (Sega CD USA)
+  bios_CD_E.bin   (Mega CD Europe)
+  bios_CD_J.bin   (Mega CD Japan)
+  bios_MD.bin     (Optional Mega Drive boot ROM)
+  32X_G_BIOS.BIN  (Optional Sega 32X)
+  32X_M_BIOS.BIN
+  32X_S_BIOS.BIN
+
+[Famicom Disk System — Nestopia]
+  disksys.rom
+  NstDatabase.xml (Optional Nestopia database)
+
+[Game Boy Advance — VBA-Next]
+  gba_bios.bin    (Optional; improves compatibility)
+
+[PC Engine CD / TurboGrafx-CD / PC-FX — Beetle PCE / Beetle PC-FX]
+  syscard1.pce
+  syscard2.pce
+  syscard3.pce    (Main Super CD-ROM2 System Card)
+  pcfx.rom        (For PC-FX)
+
+[Atari Lynx — Beetle Lynx]
+  lynxboot.img
+
+[Atari 5200 / Atari 800 — Atari800]
+  5200.rom        (Atari 5200)
+  ATARIBAS.ROM    (Optional — core includes built-in AltirraOS)
+  ATARIOSA.ROM
+  ATARIOSB.ROM
+  ATARIXL.ROM
+  XEGAME.ROM
+
+[3DO — 3DOX]
+  panafz1.bin     (Panasonic FZ-1)
+  panafz10.bin    (Panasonic FZ-10)
+  panafz10-norsa.bin
+  panafz10e-anvil.bin
+  goldstar.bin    (Goldstar)
+  sanyotry.bin    (Sanyo TRY)
+  3do_arcade_saot.bin
+
+[Amiga 500 / 1200 / CD32 — PUAE / PUAE2021]
+  kick33180.A500
+  kick34005.A500
+  kick34005.CDTV
+  kick37175.A500
+  kick37350.A600
+  kick39106.A1200
+  kick39106.A4000
+  kick40060.CD32
+  kick40060.CD32.ext
+  kick40063.A600
+  kick40068.A1200
+  kick40068.A4000
+
+[Sharp X68000 — PX68k]
+  keropi/cgrom.dat
+  keropi/iplrom.dat
+  keropi/iplrom30.dat
+  keropi/iplromco.dat
+  keropi/iplromxv.dat
+
+[FinalBurn Neo — FBNeo (Arcade / Neo Geo / Neo Geo CD / MSX / ZX Spectrum)]
+  fbneo/neogeo.zip     (Neo Geo AES/MVS)
+  fbneo/neocdz.zip     (Neo Geo CD)
+  fbneo/pgm.zip        (PolyGame Master)
+  fbneo/skns.zip       (Super Kaneko Nova System)
+  fbneo/coleco.zip
+  fbneo/msx.zip
+  fbneo/spectrum.zip
+  fbneo/spec128.zip
+  fbneo/spec1282a.zip
+  fbneo/fdsbios.zip
+  fbneo/bubsys.zip
+  fbneo/cchip.zip
+  fbneo/channelf.zip
+  fbneo/cnebula.zip
+  fbneo/decocass.zip
+  fbneo/isgsm.zip
+  fbneo/midssio.zip
+  fbneo/namcoc69.zip
+  fbneo/namcoc70.zip
+  fbneo/namcoc75.zip
+  fbneo/ngp.zip
+  fbneo/nmk004.zip
+  fbneo/ym2608.zip
+  fbneo/hiscore.dat    (Optional)
+
+[MAME 2003-Plus]
+  mame2003-plus/hiscore.dat   (Optional)
+  mame2003-plus/samples/*.zip (Optional audio samples)
+
+[Doom — PrBoom]
+  prboom.wad           (Required by PrBoom engine alongside your DOOM WADs)
+
+[MIDI Synthesizer (Optional — DOS / X68000 / Doom)]
+  *.sf2                (Small General MIDI SoundFont, e.g., Roland_SC-55.sf2)
+===============================================================================

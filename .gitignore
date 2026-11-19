@@ -43,9 +43,13 @@ prompt github.txt
 *secret*
 
 # Copyrighted user data, ROMs, BIOS, saves & runtime caches (NEVER commit)
-roms/
+# Keep only the empty roms/ directory tree (.gitkeep) and system/BIOS_LIST.txt
+roms/*
+!roms/**/
+!roms/**/.gitkeep
 Roms/
-system/
+system/*
+!system/BIOS_LIST.txt
 System/
 data/
 shadercache/
