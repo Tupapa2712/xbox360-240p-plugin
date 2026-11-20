@@ -1,5 +1,5 @@
 /*
- * 240p Dream & t240.xex (v2.22)
+ * 240p Dream & t240.xex (v2.23)
  * Desarrollado por: tupapa2712
  * "Por más que otros se basen en la lógica, los datos, la verdad y el conocimiento, yo sigo creyendo en mi mismo"
  */
@@ -81,7 +81,7 @@ typedef VOID  (*FN_MMIO_WR)(DWORD val, DWORD addr);
 
 #define DREAM_BEACON_MAGIC   0x53323430u /* 'S240' */
 #define DREAM_BEACON_VERSION 3u
-#define PLUGIN_VERSION_HEX   0x00021600u /* v2.22 */
+#define PLUGIN_VERSION_HEX   0x00021700u /* v2.23 */
 
 #define DREAM_CMD_AUTO     0u
 #define DREAM_CMD_240P     1u
@@ -238,8 +238,48 @@ static void write_480i_v_deflicker_coefs(DWORD v_taps) {
     }
 }
 
+/* v2.23: set every tick by WorkerThread -> 1 while a live 'S240' 240p Dream beacon exists. */
+static int g_in_dream = 0;
+
+#define V_INC_240P_MAX 0x00900000u /* 0x65C4 <= this -> native 240p source (1.0 = 0x00800000) */
+
+/* Odd-field V_INIT (0x65DC) and Even-field V_INIT (0x65C8) for 240p anti-bounce.
+ *  RUTA A (240p Dream / native 240p source): identical to v2.22 -> 0x65DC = v_init - 0x00010000.
+ *  RUTA B (native 360 / XBLA, 480p-720p source):
+ *    - shift = ((v_inc >> 7) + 0x800u) & ~0xFFFu (aligned to HW register step).
+ *    - Floor of 0x00020000 on odd field (0x65DC) for 5-tap scaler:
+ *      if v_init >= shift + 0x00020000: even = v_init, odd = v_init - shift
+ *      if v_init < shift + 0x00020000:  odd = 0x00020000, even = 0x00020000 + shift. */
+static void calc_v_inits(DWORD v_init_in, DWORD* p_even, DWORD* p_odd) {
+    DWORD v_inc = mmio_read(0x65C4);
+    if (g_in_dream || v_inc <= V_INC_240P_MAX) {
+        /* RUTA A: exact v2.22 behaviour */
+        *p_even = v_init_in;
+        *p_odd  = (v_init_in >= 0x00010000u) ? (v_init_in - 0x00010000u) : v_init_in;
+        return;
+    }
+
+    /* RUTA B: native 360 / XBLA games */
+    {
+        DWORD raw_shift = v_inc >> 7;
+        /* Hardware registers 0x65C8 / 0x65DC mask off low fractional bits (~0xFFF). Round cleanly. */
+        DWORD shift = (raw_shift + 0x800u) & ~0xFFFu;
+        if (shift == 0u) shift = 0x00010000u;
+
+        if (v_init_in >= (shift + 0x00020000u)) {
+            *p_even = v_init_in;
+            *p_odd  = v_init_in - shift;
+        } else {
+            /* 720p 16:9 / letterbox: lift both fields so 5-tap filter has safe headroom */
+            *p_odd  = 0x00020000u;
+            *p_even = 0x00020000u + shift;
+        }
+    }
+}
+
 static void sync_240p_mmio(void) {
-    DWORD d, v_init, r6584, r6594, src_w, v_taps, h_taps;
+    DWORD d, r6584, r6594, src_w, v_taps, h_taps;
+    DWORD cur_even, want_even, want_odd;
     r6584  = mmio_read(0x6584);
     r6594  = mmio_read(0x6594);
     src_w  = (r6584 >> 16) & 0xFFFFu;
@@ -255,8 +295,13 @@ static void sync_240p_mmio(void) {
     d = mmio_read(0x6538) & 0xFFFFu;
     mmio_write(0x6538, (d << 16) | d);
 
-    v_init = mmio_read(0x65C8);
-    mmio_write(0x65DC, (v_init >= 0x00010000u) ? (v_init - 0x00010000u) : v_init);
+    cur_even = mmio_read(0x65C8);
+    calc_v_inits(cur_even, &want_even, &want_odd);
+
+    if (cur_even != want_even) {
+        mmio_write(0x65C8, want_even);
+    }
+    mmio_write(0x65DC, want_odd);
 
     if (r6594 != 0u) {
         mmio_write(0x6590, 0);
@@ -281,12 +326,14 @@ static int needs_240p_mmio_sync(void) {
     DWORD r65dc = mmio_read(0x65DC);
     DWORD r6584 = mmio_read(0x6584);
     DWORD r6594 = mmio_read(0x6594);
-    DWORD want_65dc = (r65c8 >= 0x00010000u) ? (r65c8 - 0x00010000u) : r65c8;
+    DWORD want_even, want_odd;
+    calc_v_inits(r65c8, &want_even, &want_odd);
     if (mmio_read(0x6010) != 0x20Bu ||
         mmio_read(0x6030) != 1u ||
         mmio_read(0x6528) != 0u ||
         (r6538 >> 16) != (r6538 & 0xFFFFu) ||
-        r65dc != want_65dc ||
+        r65c8 != want_even ||
+        r65dc != want_odd ||
         !g_sharp_applied ||
         r6584 != g_sharp_6584 ||
         r6594 != g_sharp_6594 ||
@@ -636,7 +683,7 @@ static void process_live_cmd(void) {
         return;
     }
     if (cmd == 1u) {
-        DWORD d, v_init;
+        DWORD d, v_init, live_even, live_odd;
         g_live.cmd = 0u;
         g_live_override = 1;
         hana_write_4(g_live.h15, g_live.h16, g_live.h26, g_live.h28);
@@ -650,7 +697,13 @@ static void process_live_cmd(void) {
         d = mmio_read(0x6538) & 0xFFFFu;
         mmio_write(0x6538, (g_live.r6538 != 0u) ? g_live.r6538 : ((d << 16) | d));
         v_init = mmio_read(0x65C8);
-        mmio_write(0x65DC, (g_live.r65dc != 0xFFFFFFFFu) ? g_live.r65dc : ((v_init >= 0x00010000u) ? (v_init - 0x00010000u) : v_init));
+        calc_v_inits(v_init, &live_even, &live_odd);
+        if (g_live.r65dc != 0xFFFFFFFFu) {
+            mmio_write(0x65DC, g_live.r65dc);
+        } else {
+            if (v_init != live_even) mmio_write(0x65C8, live_even);
+            mmio_write(0x65DC, live_odd);
+        }
         mmio_write(0x6578, 0);
         mmio_write(0x65CC, 0);
         mmio_write(0x60E8, 0);
@@ -781,6 +834,8 @@ static DWORD WINAPI WorkerThread(LPVOID lpParam) {
 
         /* Direct 240p Dream Emulator Control ('S240' v3 IPC) & Native 360/Arcade Title Persistence */
         scan_dream_binary();
+        g_in_dream = (g_dream.pBeacon != NULL && MmIsAddressValid((PVOID)g_dream.pBeacon) &&
+                      g_dream.pBeacon->magic == DREAM_BEACON_MAGIC) ? 1 : 0;
         if (g_dream.scanned &&
             (g_dream.pe_stamp != last_beacon_stamp || g_dream.entry_point != last_beacon_ep)) {
             last_beacon_stamp = g_dream.pe_stamp;

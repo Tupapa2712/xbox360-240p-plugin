@@ -2,7 +2,7 @@
   <img src="240p-dream/Media/banner.png" alt="240p Dream by tupapa2712 Banner" width="760" />
 </p>
 
-<h1 align="center">Xbox 360 Native 240p — <code>t240.xex</code> (v2.22) &amp; 240p Dream</h1>
+<h1 align="center">Xbox 360 Native 240p — <code>t240.xex</code> (v2.23) &amp; 240p Dream</h1>
 
 <p align="center">
   <strong>True 240p analog CRT output for Xbox 360 RGH + Plug-and-Play Retro Emulator</strong><br/>
@@ -29,11 +29,14 @@ This free, open-source project unlocks **real 240p progressive output** on Xbox 
 
 ---
 
-## What's Included (v2.22)
+## What's Included (v2.23)
 
 - **240p Dream (Retro Emulator):** A CRT-focused modification of **Salvia 360** that automatically switches your TV to true **240p** the moment you start a retro game — and cleanly switches back to **480i** when you return to the menu (`LB + RB + Select`).
   
 - **`t240.xex` Plugin (For Native Xbox 360 & XBLA Games):** Great for 2D and arcade Xbox 360 titles. Just launch your game normally from Aurora and press **`LT + RT + L3 + R3`** in-game to toggle 240p on or off whenever you want.
+  - **v2.23 Update:** Features a dual-route field synchronization engine:
+    - **Route A (240p Dream Emulators):** Preserves 100% stable 240p output with zero bounce.
+    - **Route B (Native 360 & XBLA Games 480p-720p):** Dynamically calculates field shift (`v_inc >> 7` aligned to hardware registers) and guarantees safe headroom floor (`odd >= 0x00020000`) for the Xenos D1SCL 5-tap scaler, eliminating vertical flicker/bounce on 720p 16:9 letterboxed games (such as Rayman Legends and Marvel vs. Capcom 2).
 - **Ready for Aurora:** Includes matching Y2K metallic/CRT artwork (front cover, back cover, full 3D box cover, banner, wallpaper, icon, and English metadata) so Aurora displays everything cleanly right after scanning.
 
 ---
@@ -49,8 +52,8 @@ This free, open-source project unlocks **real 240p progressive output** on Xbox 
 
 ### 3-Step Installation
 1. **Download both files** from the [Releases](https://github.com/Tupapa2712/xbox360-240p-plugin/releases) page:
-   * `t240-v2.22-plugin.zip`
-   * `240p-Dream-v2.22-Complete-NoROMs-NoBIOS.zip`
+   * `t240-v2.23-plugin.zip`
+   * `240p-Dream-v2.23-Complete-NoROMs-NoBIOS.zip`
 2. **Install the `t240.xex` plugin:**
    * Copy `t240.xex` to your console (e.g., `Hdd:\AuroraLaunch\Plugins\t240.xex`).
    * Open **DashLaunch** (or edit `Hdd:\launch.ini`) and add it to a free plugin slot: `plugin3 = Hdd:\AuroraLaunch\Plugins\t240.xex`
@@ -66,8 +69,9 @@ This free, open-source project unlocks **real 240p progressive output** on Xbox 
 | **240p Dream (Emulators)** | **100% Automatic.** Menus stay in readable 480i; games launch directly in 240p. | `LB + RB + Select` *(exit game & return to 480i menu)* |
 | **Native Xbox 360 / XBLA** | Launch the game normally from Aurora in 480i, then toggle in-game. | `LT + RT + L3 + R3` *(toggle 240p <-> 480i anytime)* |
 
-### Two Important Rules (v2.22 Limitations)
+### Important Rules & Tips
 1. **Always keep Aurora in 480i when launching native Xbox 360 / XBLA games.** Launching a retail or XBLA game while 240p is already active will freeze the loading screen. Enter the game in 480i first, then press `LT + RT + L3 + R3`.
+2. **Profile Selectors & Heavy Title Transitions:** If an in-game modal (such as an Xbox Guide profile sign-in dialog or pre-rendered FMV load sequence) temporarily reverts the hardware scanout to 480i, simply tap `LT + RT + L3 + R3` again once gameplay starts to re-arm 240p.
 2. **Switch back to 480i before using the Xbox Guide button.** The Guide menu won't open while 240p is active. Toggle back to 480i first (`LT + RT + L3 + R3`, or `LB + RB + Select` in `240p Dream`) to exit or shut down normally. If you press the console's physical power button while in 240p, wait **5–10 seconds** while the plugin safely restores 480i and powers down.
 
 ---
