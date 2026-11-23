@@ -92,6 +92,7 @@ typedef VOID  (*FN_MMIO_WR)(DWORD val, DWORD addr);
 #define VIDEO_MODE_240P     1
 #define VIDEO_MODE_1280X240 2
 #define VIDEO_MODE_1920X240 3
+#define VIDEO_MODE_2560X240 4
 
 static DWORD mmio_read(DWORD off) {
     DWORD val;
@@ -106,10 +107,6 @@ static void mmio_write(DWORD off, DWORD val) {
     GadgetWr(val, 0x7FC80000u + off);
     __emit(0x7C0006AC); /* eieio */
 }
-
-static const char* CMD_PATH    = "\\Device\\Harddisk0\\Partition1\\AuroraLaunch\\User\\Scripts\\Utility\\Toggle_240p\\cmd.txt";
-static const char* STATE_PATH  = "\\Device\\Harddisk0\\Partition1\\AuroraLaunch\\User\\Scripts\\Utility\\Toggle_240p\\state.txt";
-static const char* PRESET_PATH = "\\Device\\Harddisk0\\Partition1\\AuroraLaunch\\User\\Scripts\\Utility\\Toggle_240p\\preset.txt";
 
 typedef struct _KPATCH {
     DWORD addr;
@@ -137,7 +134,7 @@ static const KPATCH g_patches_480i[] = {
 };
 
 static int   g_active_mode    = VIDEO_MODE_480I;
-static int   g_script_preset  = VIDEO_MODE_240P;
+static int   g_native_mode    = VIDEO_MODE_2560X240; /* Fixed 2560x240 Super-Resolution for native 360 & XBLA */
 
 __declspec(noinline) static void patch_word_icache(DWORD addr, DWORD val) {
     volatile DWORD* ptr = (volatile DWORD*)addr;
@@ -278,13 +275,23 @@ static void calc_v_inits(DWORD v_init_in, DWORD* p_even, DWORD* p_odd) {
 }
 
 static void sync_240p_mmio(void) {
-    DWORD d, r6584, r6594, src_w, v_taps, h_taps;
+    DWORD d, r6584, r6594, v_inc, src_w, v_taps, h_taps;
     DWORD cur_even, want_even, want_odd;
+    int need_coefs;
+
     r6584  = mmio_read(0x6584);
     r6594  = mmio_read(0x6594);
+    v_inc  = mmio_read(0x65C4);
+
+    /* Never touch CRTC/scaler locks while the GPU is mid-reset or blanked */
+    if (!g_in_dream && (r6584 == 0u || r6594 == 0u || v_inc == 0u)) {
+        return;
+    }
+
     src_w  = (r6584 >> 16) & 0xFFFFu;
     v_taps = (r6594 & 0x7u) + 1u;
     h_taps = ((r6594 >> 8) & 0xFu) + 1u;
+    need_coefs = (r6594 != 0u && (!g_sharp_applied || r6584 != g_sharp_6584 || r6594 != g_sharp_6594)) ? 1 : 0;
 
     mmio_write(0x60E8, 1);
     mmio_write(0x65CC, 0x00010000);
@@ -303,7 +310,9 @@ static void sync_240p_mmio(void) {
     }
     mmio_write(0x65DC, want_odd);
 
-    if (r6594 != 0u) {
+    /* Only disable scaler and reload coefficient RAM when geometry/taps actually changed.
+     * Avoids interrupting active D1SCL scanout during minor V_INIT/field resyncs. */
+    if (need_coefs) {
         mmio_write(0x6590, 0);
         write_nearest_coefs(v_taps, 0x00000000u);
         if (src_w > 0u && src_w <= 640u) {
@@ -327,6 +336,9 @@ static int needs_240p_mmio_sync(void) {
     DWORD r6584 = mmio_read(0x6584);
     DWORD r6594 = mmio_read(0x6594);
     DWORD want_even, want_odd;
+    if (!g_in_dream && (r6584 == 0u || r6594 == 0u || mmio_read(0x65C4) == 0u)) {
+        return 0;
+    }
     calc_v_inits(r65c8, &want_even, &want_odd);
     if (mmio_read(0x6010) != 0x20Bu ||
         mmio_read(0x6030) != 1u ||
@@ -343,8 +355,37 @@ static int needs_240p_mmio_sync(void) {
     return 0;
 }
 
+static int   g_saved_480i_valid = 0;
+static DWORD g_saved_6014       = 0x00260206u;
+static DWORD g_saved_6018       = 0x00060000u;
+static DWORD g_saved_6528       = 0u;
+static DWORD g_saved_6538       = 0u;
+static DWORD g_saved_6584       = 0u;
+static DWORD g_saved_6594       = 0u;
+static DWORD g_saved_65c8       = 0u;
+static DWORD g_saved_65dc       = 0u;
+
+static void save_480i_mmio_snapshot(void) {
+    if (mmio_read(0x6010) == 0x20Cu && mmio_read(0x6110) != 0u) {
+        g_saved_6014 = mmio_read(0x6014);
+        g_saved_6018 = mmio_read(0x6018);
+        g_saved_6528 = mmio_read(0x6528);
+        g_saved_6538 = mmio_read(0x6538);
+        g_saved_6584 = mmio_read(0x6584);
+        g_saved_6594 = mmio_read(0x6594);
+        g_saved_65c8 = mmio_read(0x65C8);
+        g_saved_65dc = mmio_read(0x65DC);
+        g_saved_480i_valid = 1;
+    }
+}
+
 static void enable_240p_mode(int mode) {
     if (mode <= 0) mode = VIDEO_MODE_240P;
+
+    /* Snapshot native 480i CRTC/scaler registers before switching so disable_240p() can restore them cleanly */
+    if (!is_240p_active()) {
+        save_480i_mmio_snapshot();
+    }
 
     apply_patches(g_patches_240p, 7);
     hana_write_4(0x2601820Cu, 0x23232323u, 0x83814068u, 0x10B420FEu);
@@ -355,27 +396,43 @@ static void enable_240p_mode(int mode) {
 }
 
 static void disable_240p(void) {
-    DWORD even_cnt, even_v_init, odd_v_init, r6594, v_taps;
+    DWORD even_cnt, even_v_init, odd_v_init, r6584, r6594, v_taps, cur_surf, orig7938;
+    int snap_matches;
+    LARGE_INTEGER_K delay20ms;
+    delay20ms.QuadPart = -200000LL; /* 20ms (~1 NTSC frame) for clean interlaced sync latch */
+
     apply_patches(g_patches_480i, 7);
     hana_write_4(0x2651B20Du, 0x67672323u, 0x8381406Au, 0x10C420FFu);
 
+    r6584  = mmio_read(0x6584);
     r6594  = mmio_read(0x6594);
     v_taps = (r6594 & 0x7u) + 1u;
+    snap_matches = (g_saved_480i_valid && r6584 == g_saved_6584 && r6594 == g_saved_6594) ? 1 : 0;
 
+    /* 1. Restore Xenos CRTC + D1SCL to exact 480i interlaced timings */
     mmio_write(0x60E8, 1);
     mmio_write(0x65CC, 0x00010000);
     mmio_write(0x6010, 0x20C);
-    mmio_write(0x6014, 0x00260206);
-    mmio_write(0x6018, 0x00060000);
+    mmio_write(0x6014, g_saved_480i_valid ? g_saved_6014 : 0x00260206u);
+    mmio_write(0x6018, g_saved_480i_valid ? g_saved_6018 : 0x00060000u);
     mmio_write(0x6030, 1);
-    mmio_write(0x6528, 0);
+    mmio_write(0x6528, g_saved_480i_valid ? g_saved_6528 : 0u);
 
-    even_cnt = mmio_read(0x6538) & 0xFFFFu;
-    mmio_write(0x6538, ((even_cnt + 1u) << 16) | even_cnt);
+    if (snap_matches && g_saved_6538 != 0u) {
+        mmio_write(0x6538, g_saved_6538);
+    } else {
+        even_cnt = mmio_read(0x6538) & 0xFFFFu;
+        mmio_write(0x6538, ((even_cnt + 1u) << 16) | even_cnt);
+    }
 
-    even_v_init = mmio_read(0x65C8);
-    odd_v_init = (even_v_init == 0x00040000u) ? 0x00060000u : (even_v_init + 0x00020000u);
-    mmio_write(0x65DC, odd_v_init);
+    if (snap_matches && (g_saved_65c8 != 0u || g_saved_65dc != 0u)) {
+        mmio_write(0x65C8, g_saved_65c8);
+        mmio_write(0x65DC, g_saved_65dc);
+    } else {
+        even_v_init = mmio_read(0x65C8);
+        odd_v_init = (even_v_init == 0x00040000u) ? 0x00060000u : (even_v_init + 0x00020000u);
+        mmio_write(0x65DC, odd_v_init);
+    }
 
     if (r6594 != 0u) {
         mmio_write(0x6590, 0);
@@ -386,75 +443,24 @@ static void disable_240p(void) {
     mmio_write(0x6578, 0);
     mmio_write(0x65CC, 0);
     mmio_write(0x60E8, 0);
+
+    /* 2. Force a clean framebuffer present latch (0x6110) + HANA commit after 1 frame
+     * so 480i locks cleanly without flicker or needing the Xbox Guide button. */
+    KeDelayExecutionThread(0, FALSE, &delay20ms);
+    cur_surf = mmio_read(0x6110);
+    if (cur_surf != 0u) {
+        mmio_write(0x6110, cur_surf);
+    }
+    orig7938 = mmio_read(0x7938);
+    mmio_write(0x7938, orig7938 & ~1u);
+    mmio_write(0x7910, 1u);
+    mmio_write(0x7900, 1u);
+    CGpuWrite(0x00u, 0x0000005Eu);
+    mmio_write(0x7938, orig7938);
+
+    g_saved_480i_valid = 0;
     g_sharp_applied = 0;
     g_active_mode = VIDEO_MODE_480I;
-}
-
-static void write_state_file(void) {
-    ANSI_STRING as;
-    OBJECT_ATTRIBUTES oa;
-    IO_STATUS_BLOCK iosb;
-    HANDLE hFile = NULL;
-    NTSTATUS st;
-    LARGE_INTEGER_K zero;
-    const char* txt;
-    ULONG len;
-
-    zero.QuadPart = 0;
-    if (!is_240p_active()) {
-        txt = "480i";
-        len = 4;
-    } else if (g_active_mode == VIDEO_MODE_1280X240) {
-        txt = "1280x240p";
-        len = 9;
-    } else if (g_active_mode == VIDEO_MODE_1920X240) {
-        txt = "1920x240p";
-        len = 9;
-    } else {
-        txt = "320x240p";
-        len = 8;
-    }
-
-    RtlInitAnsiString(&as, STATE_PATH);
-    oa.RootDirectory = NULL;
-    oa.ObjectName = &as;
-    oa.Attributes = 0x40; /* OBJ_CASE_INSENSITIVE */
-
-    st = NtCreateFile(&hFile, 0x40100000, &oa, &iosb,
-                      NULL, 0x80, 7, 5 /* FILE_OVERWRITE_IF */, 0x20);
-    if (st >= 0 && hFile != NULL) {
-        NtWriteFile(hFile, NULL, NULL, NULL, &iosb, (PVOID)txt, len, &zero);
-        NtClose(hFile);
-    }
-}
-
-static void read_script_preset(void) {
-    ANSI_STRING as;
-    OBJECT_ATTRIBUTES oa;
-    IO_STATUS_BLOCK iosb;
-    HANDLE hFile = NULL;
-    NTSTATUS st;
-    LARGE_INTEGER_K zero;
-    char buf[16];
-    zero.QuadPart = 0;
-
-    RtlInitAnsiString(&as, PRESET_PATH);
-    oa.RootDirectory = NULL;
-    oa.ObjectName = &as;
-    oa.Attributes = 0x40;
-
-    st = NtOpenFile(&hFile, 0x80100000, &oa, &iosb, 7, 0x20);
-    if (st < 0 || hFile == NULL) {
-        return;
-    }
-    buf[0] = 0;
-    st = NtReadFile(hFile, NULL, NULL, NULL, &iosb, buf, sizeof(buf) - 1, &zero);
-    NtClose(hFile);
-    if (st >= 0 && iosb.Information > 0) {
-        if (buf[0] == '3') g_script_preset = VIDEO_MODE_1280X240;
-        else if (buf[0] == '4') g_script_preset = VIDEO_MODE_1920X240;
-        else if (buf[0] == '1') g_script_preset = VIDEO_MODE_240P;
-    }
 }
 
 /* Forced hardware shutdown:
@@ -711,8 +717,14 @@ static void process_live_cmd(void) {
     }
 }
 
+#define NATIVE_STATE_OFF        0
+#define NATIVE_STATE_BOOT_WAIT  1
+#define NATIVE_STATE_ACTIVE     2
+#define NATIVE_STATE_RECOVERING 3
+
 static DWORD WINAPI WorkerThread(LPVOID lpParam) {
     LARGE_INTEGER_K delay50ms;
+    LARGE_INTEGER_K delay17ms;
     LARGE_INTEGER_K delay2s;
     FN_XAM_INPUT_GET_STATE pXamInputGetState = NULL;
     DWORD init_5b4;
@@ -721,36 +733,49 @@ static DWORD WINAPI WorkerThread(LPVOID lpParam) {
     int manual_override = 0;
     int dream_owned = 0;
     int dream_wait_ticks = 0;
-    int title_boot_ticks = 0;
+    int native_state = NATIVE_STATE_OFF;
+    int title_has_flipped = 0;
+    DWORD last_surf = 0;
+    int boot_ticks = 0;
+    int boot_flips = 0;
+    int boot_stable_ticks = 0;
+    int stall_ticks = 0;
+    int blank_ticks = 0;
+    int rec_ticks = 0;
+    int rec_flips = 0;
+    int rec_burst_count = 0;
+    int rec_burst_window = 0;
+    int sync_debounce = 0;
+    DWORD deb_6010 = 0;
+    DWORD deb_6584 = 0;
+    DWORD deb_6594 = 0;
+    DWORD deb_65c4 = 0;
     DWORD last_beacon_stamp = 0;
     DWORD last_beacon_ep = 0;
     DWORD tick = 0;
 
     delay50ms.QuadPart = -500000LL;
+    delay17ms.QuadPart = -170000LL;
     delay2s.QuadPart = -20000000LL;
     (void)lpParam;
 
-    /* Wait briefly for HDD mount at DashLaunch boot */
+    /* Wait briefly at DashLaunch boot */
     KeDelayExecutionThread(0, FALSE, &delay2s);
 
-    init_5b4  = *(volatile DWORD*)0x801705B4u;
-
-    read_script_preset();
-    write_state_file();
+    init_5b4 = *(volatile DWORD*)0x801705B4u;
 
     for (;;) {
-        ANSI_STRING as;
-        OBJECT_ATTRIBUTES oa;
-        IO_STATUS_BLOCK iosb;
-        HANDLE hFile = NULL;
-        NTSTATUS st;
-        char buf[8];
-        LARGE_INTEGER_K zero;
         XINPUT_STATE xs;
-        zero.QuadPart = 0;
 
         KeDelayExecutionThread(0, FALSE, &delay50ms);
         tick++;
+
+        if (rec_burst_window > 0) {
+            rec_burst_window--;
+            if (rec_burst_window == 0) {
+                rec_burst_count = 0;
+            }
+        }
 
         process_live_cmd();
         if ((tick % 10u) == 0u && mmio_read(0x6110) != 0u) {
@@ -784,7 +809,7 @@ static DWORD WINAPI WorkerThread(LPVOID lpParam) {
         }
 
         /* Controller shortcut:
-         *  - LT + RT + L3 + R3 (simultaneous) -> Native 360/Arcade toggle 240p <-> 480i (when NOT in 240p Dream)
+         *  - LT + RT + L3 + R3 (simultaneous) -> Native 360/XBLA toggle 2560x240 <-> 480i (outside 240p Dream)
          */
         if (pXamInputGetState != NULL) {
             DWORD u;
@@ -807,24 +832,24 @@ static DWORD WINAPI WorkerThread(LPVOID lpParam) {
                 }
             }
 
-            /* Independent Aurora-preset controller toggle (ONLY active outside 240p Dream so script/native never collide with emulator) */
             if (now_240 && !combo_240_held) {
                 combo_240_held = 1;
                 if (g_dream.pBeacon == NULL) {
                     g_diag[3]++;
                     dream_owned = 0;
-                    if (title_boot_ticks == 0 && mmio_read(0x6110) != 0u) {
-                        read_script_preset();
-                    }
-                    if (is_240p_active()) {
+                    if (is_240p_active() || native_state != NATIVE_STATE_OFF) {
                         manual_override = 0;
+                        native_state = NATIVE_STATE_OFF;
+                        g_live_override = 0;
                         disable_240p();
                     } else {
                         manual_override = 1;
-                        enable_240p_mode(g_script_preset);
-                    }
-                    if (title_boot_ticks == 0 && mmio_read(0x6110) != 0u) {
-                        write_state_file();
+                        native_state = NATIVE_STATE_ACTIVE;
+                        g_live_override = 0;
+                        stall_ticks = 0;
+                        blank_ticks = 0;
+                        sync_debounce = 0;
+                        enable_240p_mode(g_native_mode);
                     }
                 }
             } else if (!now_240) {
@@ -832,17 +857,55 @@ static DWORD WINAPI WorkerThread(LPVOID lpParam) {
             }
         }
 
-        /* Direct 240p Dream Emulator Control ('S240' v3 IPC) & Native 360/Arcade Title Persistence */
+        /* Direct 240p Dream Emulator Control ('S240' v3 IPC) & Native 360/XBLA Title Persistence */
         scan_dream_binary();
         g_in_dream = (g_dream.pBeacon != NULL && MmIsAddressValid((PVOID)g_dream.pBeacon) &&
                       g_dream.pBeacon->magic == DREAM_BEACON_MAGIC) ? 1 : 0;
+
+        /* If title image is momentarily unmapped during XamLoaderLaunchTitle, disarm 240p immediately */
+        if (!g_dream.scanned) {
+            if (!g_in_dream && is_240p_active()) {
+                disable_240p();
+            }
+            if (manual_override) {
+                native_state = NATIVE_STATE_BOOT_WAIT;
+                boot_ticks = 0;
+                boot_flips = 0;
+                boot_stable_ticks = 0;
+                title_has_flipped = 0;
+                last_surf = 0;
+            }
+            continue;
+        }
+
         if (g_dream.scanned &&
             (g_dream.pe_stamp != last_beacon_stamp || g_dream.entry_point != last_beacon_ep)) {
             last_beacon_stamp = g_dream.pe_stamp;
             last_beacon_ep = g_dream.entry_point;
             dream_wait_ticks = 0;
-            title_boot_ticks = 40; /* 2.0s zero-HDD-IO grace window during title transition */
+            g_saved_480i_valid = 0;
             g_sharp_applied = 0;
+            title_has_flipped = 0;
+            last_surf = 0;
+            boot_ticks = 0;
+            boot_flips = 0;
+            boot_stable_ticks = 0;
+            stall_ticks = 0;
+            blank_ticks = 0;
+            rec_ticks = 0;
+            rec_flips = 0;
+            sync_debounce = 0;
+            rec_burst_count = 0;
+            rec_burst_window = 0;
+
+            /* On any non-Dream title launch: ALWAYS drop to stock 480i first so D3D9 / VdSetDisplayMode
+             * initializes without freezing on the initial loading screen. */
+            if (!g_in_dream) {
+                if (is_240p_active()) {
+                    disable_240p();
+                }
+                native_state = manual_override ? NATIVE_STATE_BOOT_WAIT : NATIVE_STATE_OFF;
+            }
         }
 
         if (g_dream.pBeacon != NULL && MmIsAddressValid((PVOID)g_dream.pBeacon) &&
@@ -864,6 +927,7 @@ static DWORD WINAPI WorkerThread(LPVOID lpParam) {
             } else if (b_cmd == DREAM_CMD_480I) {
                 dream_owned = 0;
                 manual_override = 0;
+                native_state = NATIVE_STATE_OFF;
                 if (is_240p_active()) {
                     disable_240p();
                 }
@@ -873,6 +937,7 @@ static DWORD WINAPI WorkerThread(LPVOID lpParam) {
                 else if (b_w >= 1200u) res_mode = VIDEO_MODE_1280X240;
                 dream_owned = 1;
                 manual_override = 0;
+                native_state = NATIVE_STATE_OFF;
                 if (!is_240p_active() || g_active_mode != res_mode) {
                     g_live_override = 0;
                     enable_240p_mode(res_mode);
@@ -881,6 +946,7 @@ static DWORD WINAPI WorkerThread(LPVOID lpParam) {
                 }
             } else if (b_w > 0u && b_h > 0u) {
                 manual_override = 0;
+                native_state = NATIVE_STATE_OFF;
                 if (b_menu != 0u || b_h > 256u) {
                     dream_owned = 0;
                     if (is_240p_active()) {
@@ -910,107 +976,165 @@ static DWORD WINAPI WorkerThread(LPVOID lpParam) {
             }
             continue;
         } else {
+            int want_native_240p = manual_override ? 1 : 0;
             dream_wait_ticks = 0;
             if (dream_owned) {
                 dream_owned = 0;
-                if (!manual_override && is_240p_active()) {
+                if (!want_native_240p && is_240p_active()) {
                     disable_240p();
                 }
-            } else if (manual_override) {
-                /* Native Xbox 360 / XBLA Arcade game or Aurora with 240p enabled manually:
-                 * Keep 240p active across title launches and re-sync Xenos/HANA once scanout is live. */
-                if (mmio_read(0x6110) != 0u) {
-                    if (!is_240p_active()) {
-                        enable_240p_mode(g_script_preset);
-                    } else if (needs_240p_mmio_sync()) {
-                        if (mmio_read(0x6010) != 0x20Bu) {
-                            hana_write_4(0x2601820Cu, 0x23232323u, 0x83814068u, 0x10B420FEu);
+            }
+
+            if (!want_native_240p) {
+                native_state = NATIVE_STATE_OFF;
+                if (is_240p_active()) {
+                    disable_240p();
+                }
+            } else {
+                DWORD cur_surf = mmio_read(0x6110);
+                DWORD r6584 = mmio_read(0x6584);
+                DWORD r6594 = mmio_read(0x6594);
+                DWORD r65c4 = mmio_read(0x65C4);
+                int scanout_ready = (cur_surf != 0u && r6584 != 0u && r6594 != 0u && r65c4 != 0u) ? 1 : 0;
+
+                if (native_state == NATIVE_STATE_OFF) {
+                    native_state = NATIVE_STATE_BOOT_WAIT;
+                    boot_ticks = 0;
+                    boot_flips = 0;
+                    boot_stable_ticks = 0;
+                }
+
+                if (native_state == NATIVE_STATE_BOOT_WAIT) {
+                    /* Keep stock 480i until the new title finishes D3D init and actively presents frames */
+                    if (is_240p_active()) {
+                        disable_240p();
+                    }
+                    boot_ticks++;
+                    if (scanout_ready) {
+                        boot_stable_ticks++;
+                        if (last_surf != 0u && cur_surf != last_surf) {
+                            boot_flips++;
+                            title_has_flipped = 1;
                         }
-                        sync_240p_mmio();
+                        last_surf = cur_surf;
+                        if ((boot_ticks >= 50 && boot_flips >= 10) ||
+                            (boot_ticks >= 160 && boot_stable_ticks >= 20)) {
+                            enable_240p_mode(g_native_mode);
+                            native_state = NATIVE_STATE_ACTIVE;
+                            stall_ticks = 0;
+                            blank_ticks = 0;
+                            sync_debounce = 0;
+                        }
+                    } else {
+                        boot_stable_ticks = 0;
+                        last_surf = 0;
+                    }
+                } else if (native_state == NATIVE_STATE_RECOVERING) {
+                    /* Temporarily in 480i to release a VBlank/transition stall; re-engage 240p once healthy flips resume */
+                    if (is_240p_active()) {
+                        disable_240p();
+                    }
+                    rec_ticks++;
+                    if (scanout_ready) {
+                        if (last_surf != 0u && cur_surf != last_surf) {
+                            rec_flips++;
+                            title_has_flipped = 1;
+                        }
+                        last_surf = cur_surf;
+                        if (rec_flips >= 8 && rec_ticks >= 12) {
+                            enable_240p_mode(g_native_mode);
+                            native_state = NATIVE_STATE_ACTIVE;
+                            stall_ticks = 0;
+                            blank_ticks = 0;
+                            sync_debounce = 0;
+                        }
+                    } else {
+                        last_surf = 0;
+                    }
+                } else {
+                    /* NATIVE_STATE_ACTIVE: 2560x240 engaged with transition stabilization + stall auto-recovery */
+                    if (cur_surf == 0u) {
+                        blank_ticks++;
+                        sync_debounce = 0;
+                        if (blank_ticks >= 10) {
+                            /* Blanked >= 500ms (display reset / scene load): drop to 480i until flips resume */
+                            if (is_240p_active()) {
+                                disable_240p();
+                            }
+                            native_state = NATIVE_STATE_RECOVERING;
+                            rec_ticks = 0;
+                            rec_flips = 0;
+                            blank_ticks = 0;
+                            stall_ticks = 0;
+                            last_surf = 0;
+                        }
+                    } else {
+                        blank_ticks = 0;
+                        if (last_surf != 0u && cur_surf != last_surf) {
+                            title_has_flipped = 1;
+                            stall_ticks = 0;
+                        } else if (title_has_flipped) {
+                            stall_ticks++;
+                            /* Anti-aliasing 17ms double-check (~1 NTSC frame) before declaring a stall */
+                            if (stall_ticks >= 20) {
+                                DWORD peek_surf;
+                                KeDelayExecutionThread(0, FALSE, &delay17ms);
+                                peek_surf = mmio_read(0x6110);
+                                if (peek_surf != 0u && peek_surf != cur_surf) {
+                                    cur_surf = peek_surf;
+                                    stall_ticks = 0;
+                                }
+                            }
+                            {
+                                int stall_thresh = (rec_burst_count >= 3) ? 60 : 30;
+                                if (stall_ticks >= stall_thresh) {
+                                    /* Confirmed presentation stall: auto-restore 480i in background to unstick game */
+                                    if (is_240p_active()) {
+                                        disable_240p();
+                                    }
+                                    native_state = NATIVE_STATE_RECOVERING;
+                                    rec_ticks = 0;
+                                    rec_flips = 0;
+                                    stall_ticks = 0;
+                                    sync_debounce = 0;
+                                    rec_burst_count++;
+                                    rec_burst_window = 300;
+                                }
+                            }
+                        }
+                        last_surf = cur_surf;
+
+                        /* Debounced MMIO/HANA sync while active (never race an in-flight VdSetDisplayMode) */
+                        if (native_state == NATIVE_STATE_ACTIVE && scanout_ready) {
+                            if (!is_240p_active()) {
+                                enable_240p_mode(g_native_mode);
+                                sync_debounce = 0;
+                            } else if (needs_240p_mmio_sync()) {
+                                DWORD r6010 = mmio_read(0x6010);
+                                if (sync_debounce == 0 ||
+                                    r6010 != deb_6010 || r6584 != deb_6584 ||
+                                    r6594 != deb_6594 || r65c4 != deb_65c4) {
+                                    deb_6010 = r6010;
+                                    deb_6584 = r6584;
+                                    deb_6594 = r6594;
+                                    deb_65c4 = r65c4;
+                                    sync_debounce = 1;
+                                } else {
+                                    sync_debounce++;
+                                    if (sync_debounce >= 2) {
+                                        if (r6010 != 0x20Bu) {
+                                            hana_write_4(0x2601820Cu, 0x23232323u, 0x83814068u, 0x10B420FEu);
+                                        }
+                                        sync_240p_mmio();
+                                        sync_debounce = 0;
+                                    }
+                                }
+                            } else {
+                                sync_debounce = 0;
+                            }
+                        }
                     }
                 }
-            } else if (is_240p_active()) {
-                disable_240p();
-            }
-        }
-
-        /* Skip HDD polling during title transitions or while scanout is blank to avoid FATX contention */
-        if (title_boot_ticks > 0) {
-            title_boot_ticks--;
-            continue;
-        }
-        if (mmio_read(0x6110) == 0u) {
-            continue;
-        }
-
-        /* Poll Aurora script cmd.txt every 100ms */
-        if ((tick & 1u) != 0) {
-            continue;
-        }
-
-        RtlInitAnsiString(&as, CMD_PATH);
-        oa.RootDirectory = NULL;
-        oa.ObjectName = &as;
-        oa.Attributes = 0x40;
-
-        st = NtOpenFile(&hFile, 0x80100000, &oa, &iosb, 7, 0x20);
-        if (st < 0 || hFile == NULL) {
-            continue;
-        }
-
-        buf[0] = 0;
-        st = NtReadFile(hFile, NULL, NULL, NULL, &iosb, buf, 4, &zero);
-        NtClose(hFile);
-        if (st < 0 || iosb.Information == 0) {
-            KeDelayExecutionThread(0, FALSE, &delay50ms);
-            continue;
-        }
-
-        hFile = NULL;
-        st = NtOpenFile(&hFile, 0x80110000, &oa, &iosb, 7, 0x1020);
-        if (st >= 0 && hFile != NULL) {
-            NtClose(hFile);
-        }
-
-        if (buf[0] == 'r') {
-            /* Aurora script armed a resolution preset without activating 240p in Aurora */
-            read_script_preset();
-            write_state_file();
-        } else if (buf[0] == 'p') {
-            force_power_off(1);
-        } else if (g_dream.pBeacon == NULL) {
-            dream_owned = 0;
-            if (buf[0] == '0') {
-                manual_override = 0;
-                disable_240p();
-                write_state_file();
-            } else if (buf[0] == '1') {
-                manual_override = 1;
-                g_script_preset = VIDEO_MODE_240P;
-                enable_240p_mode(VIDEO_MODE_240P);
-                write_state_file();
-            } else if (buf[0] == '3') {
-                manual_override = 1;
-                g_script_preset = VIDEO_MODE_1280X240;
-                enable_240p_mode(VIDEO_MODE_1280X240);
-                write_state_file();
-            } else if (buf[0] == '4') {
-                manual_override = 1;
-                g_script_preset = VIDEO_MODE_1920X240;
-                enable_240p_mode(VIDEO_MODE_1920X240);
-                write_state_file();
-            } else if (buf[0] == 't') {
-                read_script_preset();
-                if (is_240p_active()) {
-                    manual_override = 0;
-                    disable_240p();
-                } else {
-                    manual_override = 1;
-                    enable_240p_mode(g_script_preset);
-                }
-                write_state_file();
-            } else if (buf[0] == 's') {
-                write_state_file();
             }
         }
     }

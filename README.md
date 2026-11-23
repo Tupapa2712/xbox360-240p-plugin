@@ -2,7 +2,7 @@
   <img src="240p-dream/Media/banner.png" alt="240p Dream by tupapa2712 Banner" width="760" />
 </p>
 
-<h1 align="center">Xbox 360 Native 240p — <code>t240.xex</code> (v2.23) &amp; 240p Dream</h1>
+<h1 align="center">Xbox 360 Native 240p — <code>t240.xex</code> (v2.30) &amp; 240p Dream</h1>
 
 <p align="center">
   <strong>True 240p analog CRT output for Xbox 360 RGH + Plug-and-Play Retro Emulator</strong><br/>
@@ -25,143 +25,107 @@
 
 Normally, when you connect an Xbox 360 to a standard-definition tube TV (CRT) using a Component, SCART, or AV cable, the console only outputs a flickering **480i** interlaced image.
 
-This free, open-source project unlocks **real 240p progressive output** on Xbox 360 RGH — eliminating interlace flicker and delivering authentic black scanlines and razor-sharp pixels, so 8-bit/16-bit emulators and 2D Xbox 360 games look just like original retro consoles on a CRT.
+This free, open-source project unlocks **real 240p progressive output** on Xbox 360 RGH — eliminating interlace flicker and delivering authentic black scanlines and razor-sharp pixels, so retro emulators and native Xbox 360 / XBLA games look just like original 15 kHz consoles on a CRT.
 
 ---
 
-## What's Included
+## What's New in v2.30
 
-- **240p Dream (Retro Emulator):** A CRT-focused retro gaming frontend based on **Salvia 360**. It automatically switches your TV to true **240p** the moment you launch an 8-bit or 16-bit classic, and cleanly switches back to **480i** whenever you exit back to the menu with **`LB + RB + Select`**.
-  
-- **`t240.xex` Plugin (Native Xbox 360 & XBLA Games):** Lets you switch native Xbox 360 and Arcade titles to authentic **240p** on your CRT with **`LT + RT + L3 + R3`**. In v2.23, games in 480p and 720p widescreen (such as *Rayman Legends* and *Marvel vs. Capcom 2*) now display completely steady without any vertical jitter or screen bounce, while retro emulators in 240p Dream stay 100% rock-solid and untouched.
+### 240p Dream (Updated to Salvia 360 v1.1.2 Base)
+- **Updated Cores & Direct3D Acceleration:** Synced with **Salvia 360 v1.1.2**, adding updated cores (**Snes9x** with MSU-1, **Atari 2600 / Stella 2014**, **blueMSX**, **mGBA** with Direct3D acceleration), built-in BIOS downloader, and full true **240p** CRT output protection.
+- **CRT-Ready Defaults Out of the Box:** Pre-configured for crisp 15 kHz CRTs (`2560x240` 4x Super-Resolution, `50 Hz PAL: Auto`, `Core Provided` aspect ratio, `Nearest Neighbor` scaling, `Integer Scale: On`, `Reduce Scale`, `Purple Drop` animated background, `Screen Resolution: Auto`).
+- **Nintendo 64 (`xbox64`) 240p Fix:** Fixed viewport scaling and EDRAM render-target overlap so N64 games display properly framed, sharp, and uncropped in `2560x240` (with selectable `1x 320x240` / `2x 640x480` internal resolution).
+- **Pre-Launch Core Options in Crisp 480i:** All **10 main cores** (`PlayStation PCSXR-360`, `Nintendo 64 xbox64`, `Snes9x`, `Snes9x 2010`, `mGBA`, `Genesis Plus GX`, `Nestopia`, `Gambatte`, `Stella 2014`, `blueMSX`) can now be configured directly from the **480i main menu (`Options → Core Options`) before launching a game** — no need to squint at menus in super-resolution during gameplay (`Select + Y` remains available in-game too).
+- **PlayStation Controller Selector (`Digital` Default / `DualShock`) & Physical Rumble:**
+  - PlayStation (`pcsxr-360`) defaults to **Standard / Digital Controller** and lets you switch Port 1 to **DualShock (Analog + Rumble)** right from **Core Options** before launching a game (or live in-game).
+  - Real physical **XInput Rumble** enabled for both **PlayStation 1 (DualShock)** and **Nintendo 64 (Rumble Pak)**, with automatic motor stop when pausing or exiting.
+- **New Instant Exit Combo:** Press **`LB + RB + LT + RT`** inside any retro game to exit immediately to the main menu, cleanly restoring **480i** and stopping controller vibration.
 
-- **Aurora Artwork:** Includes matching high-resolution front cover, back cover, 3D box art, banner, wallpaper, icon, and English metadata ready for Aurora Dashboard right out of the box.
+### `t240.xex` Plugin (Native Xbox 360 & XBLA Games)
+- **Fixed `2560x240` Super-Resolution — Zero External Scripts:** No Aurora Lua script or external selector is needed anymore. Press **`LT + RT + L3 + R3`** inside any native Xbox 360 or XBLA game to toggle directly between **`2560x240`** and **`480i`**.
+- **Zero On-Screen Popups:** Removed all on-screen notifications during video switches so nothing interferes with resolution transitions.
+- **Stable Return to 480i & Transition Handling:** Snapshots and restores exact 480i CRTC/HANA sync with framebuffer re-latch when disabling 240p, eliminating uncontrolled 480i flicker without needing to open the Xbox Guide button.
+- **Zero Latency Overhead:** Removed all background logging and frame-time telemetry; `t240.xex` performs zero framebuffer buffering and adds no input lag.
 
 ---
 
 ## Easy Setup & How to Use
 
 ### What You Need
-* **Xbox 360 with RGH** (Kernel 17559)
+* **Xbox 360 with RGH** (Kernel **17559**)
 * **CRT TV** connected via Component, SCART, or AV cable (set Xbox display to **480i**)
 * **DashLaunch** and **Aurora Dashboard**
 
+> **IMPORTANT — Stealth Server Incompatibility:** `t240.xex` is **NOT compatible with Xbox Live Stealth servers**. Do not load it alongside any Stealth server plugin in `launch.ini`. This project is strictly for offline RGH/JTAG CRT use.
+>
 > **Note:** No copyrighted ROMs, BIOS files, or Xbox 360 SDK files are included. Bring your own legally dumped games and BIOS files.
 
 ### 3-Step Installation
-1. **Download both files** from the [Releases](https://github.com/Tupapa2712/xbox360-240p-plugin/releases) page:
-   * `t240-v2.23-plugin.zip`
-   * `240p-Dream-v2.23-Complete-NoROMs-NoBIOS.zip`
-2. **Install the `t240.xex` plugin:**
+1. **Download the files** from the [Releases](https://github.com/Tupapa2712/xbox360-240p-plugin/releases) page:
+   * `t240-v2.30-plugin.zip` (or standalone `t240.xex`)
+   * `240p-Dream-v2.30-Complete-NoROMs-NoBIOS.zip`
+2. **Install `t240.xex`:**
    * Copy `t240.xex` to your console (e.g., `Hdd:\AuroraLaunch\Plugins\t240.xex`).
-   * Open **DashLaunch** (or edit `Hdd:\launch.ini`) and add it to a free plugin slot: `plugin3 = Hdd:\AuroraLaunch\Plugins\t240.xex`
+   * Open **DashLaunch** (or edit `Hdd:\launch.ini`) and assign a free plugin slot: `plugin3 = Hdd:\AuroraLaunch\Plugins\t240.xex`
    * Save and **reboot** your console.
 3. **Install `240p Dream`:**
-   * Copy the `240p Dream` folder to your emulators directory (e.g., `Hdd:\Emulators\240p Dream\`).
-   * **Important — BIOS & ROMs are NOT included:** You must obtain your own BIOS files and games separately. `240p Dream` uses the **exact same standard BIOS files as RetroArch** — place required BIOS files inside `240p Dream\system\` (see **`BIOS_LIST.txt`** inside the emulator ZIP for the full list per system) and drop your games into the pre-created empty folders inside `240p Dream\roms\<system>\`.
-   * Scan your content paths in **Aurora** — box art, banner, background, icon, and description will load automatically.
+   * Extract `240p Dream` to your emulators folder (e.g., `Hdd:\Emulators\240p Dream\`).
+   * Place your own RetroArch-compatible BIOS files in `240p Dream\system\` (see `BIOS_LIST.txt`) and your ROMs in the pre-created empty folders under `240p Dream\roms\<system>\`.
+   * Scan your content paths in **Aurora** — cover art, banner, background, and icon load automatically.
 
 ### Quick Controls
 | Where | How it Works | Button Combo |
 | :--- | :--- | :--- |
-| **240p Dream (Emulators)** | **100% Automatic.** Menus stay in readable 480i; games launch directly in 240p. | `LB + RB + Select` *(exit game & return to 480i menu)* |
-| **Native Xbox 360 / XBLA** | Launch the game normally from Aurora in 480i, then toggle in-game. | `LT + RT + L3 + R3` *(toggle 240p <-> 480i anytime)* |
+| **240p Dream (Emulators)** | **100% Automatic.** Menus stay in crisp **480i**; games switch automatically to **240p**. | **`LB + RB + LT + RT`** *(exit game & return to 480i menu)* |
+| **240p Dream (In-Game Menu)** | Optional in-game overlay menu (Core Options are also accessible before launch in 480i). | **`Select + Y`** *(open/close overlay menu)* |
+| **Native Xbox 360 / XBLA** | Launch the game normally from Aurora in **480i**, then toggle in-game. | **`LT + RT + L3 + R3`** *(toggle **`2560x240`** ↔ **`480i`**)* |
 
 ### Important Rules & Tips
-1. **Always launch native Xbox 360 & Arcade games in 480i first:** Keep Aurora in 480i when starting a game so the loading screens don't freeze. Once you are in gameplay, press **`LT + RT + L3 + R3`** to switch to 240p.
-2. **In-game menus, cutscenes, loading screens & profile sign-in:** If an in-game loading screen, video cutscene, or profile selector temporarily reverts the display to 480i or behaves unusually, simply press **`LT + RT + L3 + R3`** again when you return to active gameplay to re-engage 240p.
-3. **Switch back to 480i before opening the Xbox Guide or powering off:** Press **`LT + RT + L3 + R3`** (or **`LB + RB + Select`** in 240p Dream) to return to 480i before opening the Guide menu or turning off the console. If you turn off the console using the physical power button while 240p is active, wait **5 to 10 seconds** for the plugin to safely restore 480i before the system shuts down.
+1. **Native Xbox 360 & XBLA — Loading Screens, Menus & Level Transitions:**
+   - Launch native Xbox 360 and XBLA games from Aurora in **480i**, then press **`LT + RT + L3 + R3`** once in gameplay to engage **`2560x240`**.
+   - **If a native 360 or XBLA game pauses or gets stuck on a loading screen, menu, character select, or level change while in 240p:** press **`LT + RT + L3 + R3`** to temporarily return to **480i** so the game can advance, then press **`LT + RT + L3 + R3`** again once gameplay resumes. The console does not detect or notify internal scene transitions while running in 240p mode.
+2. **Do Not Use with Stealth Servers:** Always keep Stealth plugins disabled in `launch.ini` when using `t240.xex`.
+3. **Powering Off Safely:** Return to **480i** before shutting down; if you press the physical power button while in 240p, wait 5–10 seconds for the watchdog to restore 480i and power off safely.
 
 ---
 
-## Technical Details, Checksums & Building from Source
+## Official v2.30 SHA-256 Checksums
 
 <details>
-<summary><strong>Click to expand: How it works under the hood (15 kHz HANA/Xenos, Anti-Bounce & 4:3 Shader)</strong></summary>
-
-- **Safety & Scope:** All changes happen in RAM at runtime — **no NAND flash or permanent system files are modified**. Tested on an **Xbox 360 S (Model 1439, Corona `12V 9.6A`, RGH, Kernel `17559`)** over Component (YPbPr) into a Sony Trinitron WEGA SD CRT. Not tested over HDMI or on kernels other than `17559`. Use at your own risk.
-- **True 15.734 kHz 240p Signal (`t240.xex` v2.22):**
-  - DashLaunch `<sysdll/>` worker running at elevated priority (`KeSetPriorityThread(..., 20)`) on system processor `0x02`.
-  - Patches Kernel `17559` video tables and programs HANA/ANA (`0x15 = 0x2601820C`, `0x16 = 0x23232323`, `0x26 = 0x83814068`, `0x28 = 0x10B420FE`) via dual `VdWriteAna` + `CGpuWrite` + commit `0x5E`.
-  - Reconfigures Xenos CRTC/D1 MMIO (`0x6010 = 0x20B`, `0x6030 = 1`, `0x6528 = 0` on both enable and disable to prevent vertical color bars when returning to 480i, `0x6538 = (d<<16)|d`).
-  - **Zero vertical bounce:** Applies phase offset `0x65DC = 0x65C8 - 0x00010000`.
-  - **Nearest-Neighbor hardware LUTs:** Programs unity weights (`w = 512`) into Xenos `D1SCL` vertical (and horizontal when `src_w <= 640`) banks while in 240p, and restores 50/50 vertical deflicker on return to 480i.
-- **Automatic Emulator IPC (`S240` v3 Beacon):** `240p Dream` exposes a volatile `S240` beacon in `.data` so `t240.xex` automatically switches between 480i (`default.xex`) and 240p (game cores).
-- **Full 4:3 SNES & NES Without Shimmer (`Snes9x2010`, `Snes9x`, `Nestopia`):**
-  - Upgrades backbuffer width to **`640x240`** (keeping `src_w <= 640` so Xenos keeps Nearest-Neighbor LUTs active) with `D3DPRESENTFLAG_NO_LETTERBOX` edge-to-edge 4:3 mapping and strict **1:1 vertical scanlines** (`224`/`239`/`240` lines unscaled).
-  - Uses a built-in full-precision `ps_3_0` **Sharp-Bilinear-X / Point-Y** HLSL shader whenever horizontal scaling is fractional (`256 -> 640` at `2.5x`, or SNES Hi-Res `512 -> 640` at `1.25x`), removing horizontal scroll shimmer with zero vertical scanline bleed.
-
-</details>
-
-<details>
-<summary><strong>Click to expand: Official v2.22 SHA-256 Checksums</strong></summary>
+<summary><strong>Click to expand: Official v2.30 SHA-256 Checksums</strong></summary>
 
 | File | Size | SHA-256 |
 |---|---|---|
-| `prebuilt/t240.xex` (v2.22) | `102,400` B | `AA19E9EFD40C7AEFD0FD1076BF29F2B16D958B3956157505063332117A36DDE5` |
-| `240p-dream/prebuilt/Snes9x2010.xex` | `9,351,168` B | `85C9775F97F7A950449806A52FE9B9F5EF4BA7C894F8EA7CE2BE80BD9B118D6E` |
-| `240p-dream/prebuilt/Snes9x.xex` | `9,289,728` B | `2E97406630C58636F119E59F13A401EBF45DFBADF3E24272CD2A3581D8990AFD` |
-| `240p-dream/prebuilt/Nestopia.xex` | `10,235,904` B | `5AF88FFB055656CB49C5D3BE6A30AC48F3051F9898397C7476AAE4551E007689` |
-| `t240-v2.22-plugin.zip` | `115,467` B | `54F50DBEF1C7B5999E2705E15CB84B0245D5F3145FCC19FAB7F835FC540DF81D` |
-| `240p-Dream-v2.22-Complete-NoROMs-NoBIOS.zip` | `373,537,222` B | `BE2BDA465419C086C29BDB6B3A060894D0A4EA8ED0A2C11953D023E1FE79210B` |
+| `t240.xex` (v2.30) | `102,400` B | `BF428062E2BAB19A144B117F051BCC5AB682240CF2C5F3BF1155808B129F7C50` |
+| `t240-v2.30-plugin.zip` | `111,404` B | `2E1A4887220FA18F226DCA814D4B2DF76823FCED27B3F6F6A2C534727FE1BB1A` |
+| `240p-Dream-v2.30-Complete-NoROMs-NoBIOS.zip` | `292,170,172` B | `CF8A9C62FC3A51BF6C4981682449C7A08E76B1FA52FB8E3099A4EF00318DF5A7` |
+| `default.xex` (240p Dream) | `8,134,656` B | `5A9A33B7F6126CF9BAFBB313ED4E98BF7BF38C60391A6D157719AA075BC2B52E` |
+| `pcsxr-360.xex` (PlayStation) | `23,425,024` B | `26EAC3B3CFA83DE343EBBCFE6183D024BAFE9394D7EEF526F1E3281B2CF82884` |
+| `xbox64.xex` (Nintendo 64) | `9,244,672` B | `7D69B53C23E0CFD3E057AD0D141E3BBF825AA1F9042FAA7EA04819B8A17AFF5B` |
+| `Snes9x.xex` (SNES MSU-1) | `10,371,072` B | `D9797172C6CFD096E342E3DF578EECB6DBA06CF76E295C28DA136DCB7429CFE1` |
+| `Snes9x2010.xex` (SNES) | `10,432,512` B | `B8999CD6E281F287F0C93224EC49461AE141FD05EACE3B2B97A48273C5A33B4C` |
+| `Nestopia.xex` (NES) | `11,317,248` B | `C7F87429D0FFAA798DA67FD8D3509F0C298963F2F32982B2F31275449E419958` |
+| `Genesis-Plus-GX.xex` (Genesis/MD) | `12,378,112` B | `6737B3FA20E0F9449BF24961DF6DE21F1E2C12BEA1B43083CAB2021BEF932523` |
+| `mgba.xex` (GBA D3D) | `9,908,224` B | `0C5CB158786403E195D34AC776C792B259D02114EF0878EC423AB70BC026ED23` |
+| `Gambatte.xex` (GB/GBC) | `9,412,608` B | `B54BADC6E93D3A712EC2980BD96D83849630D561255CF795758BE33B5576A9BF` |
+| `stella2014.xex` (Atari 2600) | `9,216,000` B | `0230FDFB64BFDE7285034DEEEFB2BB596FF949B158B52D7375544C53E30D82FE` |
+| `blueMSX.xex` (MSX/MSX2) | `9,383,936` B | `7AAB323DB83C8F5FCAA4F212B09E1A0C6AEB8FDE65F0E909E43EB40FE5D9D5FC` |
 
 </details>
 
-<details>
-<summary><strong>Click to expand: Repository Structure & Building from Source</strong></summary>
+---
 
-```text
-.
-├── .github/FUNDING.yml              # GitHub Sponsor / Ko-fi link
-├── LICENSE                          # Original Salvia 360 GNU AGPL v3.0 license
-├── licenses/                        # Preserved original licenses for Salvia 360 & all libretro cores
-├── README.md                        # English project documentation
-├── GUIA_USUARIO_GITHUB_REDDIT.txt   # Spanish step-by-step user guide
-├── build.bat                        # Build script for t240.xex
-├── src/                             # t240.xex v2.22 source code (t240.c + xex.xml)
-├── prebuilt/t240.xex                # Verified v2.22 plugin binary
-├── aurora_script/Toggle_240p/       # Optional Aurora utility Lua script
-└── 240p-dream/
-    ├── prebuilt/                    # Verified 4:3 240p SNES & NES cores (Snes9x2010, Snes9x, Nestopia)
-    ├── src/                         # Clean 240p Dream C++ frontend source code (Salvia 360 fork)
-    ├── libs/libSDLx360/SDL/src/video/xbox/  # Xbox 360 D3D9 240p driver & Sharp-X/Point-Y HLSL shader
-    ├── config/                      # Clean emulator configuration templates
-    ├── assets/shaders/              # Nearest passthrough shader preset
-    ├── salvia.cfg                   # Default English 240p CRT configuration
-    ├── retropad.ini                 # Default controller mapping
-    ├── default.xml                  # English local Aurora metadata
-    ├── BIOS_LIST.txt                # Complete list of standard RetroArch BIOS files
-    ├── roms/                        # Pre-created empty system subfolders (no ROMs included)
-    ├── system/BIOS_LIST.txt         # BIOS reference list (no BIOS files included)
-    └── Media/                       # Y2K metallic/CRT Aurora artwork (cover, front, back, banner, bg, icon)
-```
+## Building from Source
 
-> You do **not** need to compile from source to use this project — ready-to-run downloads are in [**Releases**](https://github.com/Tupapa2712/xbox360-240p-plugin/releases).
-
-To build from source yourself, you need your own **Microsoft Xbox 360 SDK (XEDK)** and full **Visual Studio 2010** (Express editions lack the PowerPC toolchain). No proprietary SDK files are included here.
+Requires the **Microsoft Xbox 360 SDK (XEDK)** and full **Visual Studio 2010** (Visual Studio Express is not supported):
 
 ```bat
 build.bat
 ```
 
-</details>
+Outputs `build\t240.xex` (linked with `/DLL /BASE:0x81E00000` and `src\xex.xml`, zero static `xam.xex` imports).
 
----
+## License & Credits
 
-## Credits & Attribution
-
-- **Salvia 360:** **240p Dream** is an open-source fork and CRT-specialized modification of [**Salvia 360**](https://github.com/danibiker/Salvia) created by **DaniBiker**. Full credit for the original Xbox 360 Libretro frontend belongs to DaniBiker, and its original `LICENSE` file is preserved verbatim in this repository.
-- **Libretro Cores & Upstream Authors:** Thanks to the **Libretro / RetroArch** team and the authors/porters of all included cores — **Snes9x2010**, **Snes9x**, **Nestopia**, **Genesis Plus GX**, **PicoDrive**, **Gambatte**, **VBA-Next**, **FBNeo**, **FBANext**, **MAME 2003-Plus**, **Beetle / Mednafen**, **PCSXR-360**, **Xbox64 / Wii64**, **DOSBox-Pure**, **PUAE**, **Frodo**, **Atari800**, **PX68k**, **PrBoom**, **TyrQuake**, **Cannonball**, and **3DOX**. All original core licenses are preserved in [`licenses/`](licenses/).
-- *Developed with technical assistance, debugging, and documentation support from Gemini AI.*
-
----
-
-## Support the Project
-
-Everything in this project (`t240.xex` and `240p Dream`) is — and will always remain — **100% free and open-source**.
-
-If this brought authentic 240p scanlines to your CRT and you'd like to buy me a coffee to support future native 240p CRT research on other consoles (**PS3, Wii U, Original Xbox**), you can do so here:
-
-<p align="center">
-  <a href="https://ko-fi.com/tupapa2712"><strong>Support tupapa2712 on Ko-fi (ko-fi.com/tupapa2712)</strong></a>
-</p>
+- **`t240.xex`:** Open-source Xbox 360 240p DashLaunch plugin by **tupapa2712**.
+- **`240p Dream`:** CRT-focused fork of **[Salvia 360](https://github.com/danibiker/Salvia)** (v1.1.2) by **danibiker**, licensed under **GNU AGPL v3.0** (see `LICENSE` and `licenses/`).
