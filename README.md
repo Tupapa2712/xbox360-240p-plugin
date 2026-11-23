@@ -57,7 +57,7 @@ This free, open-source project unlocks **real 240p output** on Xbox 360 RGH — 
 
 ### 3-Step Installation
 1. **Download the files** from the [Releases](https://github.com/Tupapa2712/xbox360-240p-plugin/releases) page:
-   * `t240-v2.30-plugin.zip` (or standalone `t240.xex`)
+   * `t240.xex`
    * `240p-Dream-v2.30-Complete-NoROMs-NoBIOS.zip`
 2. **Install `t240.xex`:**
    * Copy `t240.xex` to your console (e.g., `Hdd:\AuroraLaunch\Plugins\t240.xex`).
@@ -92,7 +92,6 @@ This free, open-source project unlocks **real 240p output** on Xbox 360 RGH — 
 | File | Size | SHA-256 |
 |---|---|---|
 | `t240.xex` (v2.30) | `102,400` B | `BF428062E2BAB19A144B117F051BCC5AB682240CF2C5F3BF1155808B129F7C50` |
-| `t240-v2.30-plugin.zip` | `111,404` B | `2E1A4887220FA18F226DCA814D4B2DF76823FCED27B3F6F6A2C534727FE1BB1A` |
 | `240p-Dream-v2.30-Complete-NoROMs-NoBIOS.zip` | `292,170,172` B | `CF8A9C62FC3A51BF6C4981682449C7A08E76B1FA52FB8E3099A4EF00318DF5A7` |
 | `default.xex` (240p Dream) | `8,134,656` B | `5A9A33B7F6126CF9BAFBB313ED4E98BF7BF38C60391A6D157719AA075BC2B52E` |
 | `pcsxr-360.xex` (PlayStation) | `23,425,024` B | `26EAC3B3CFA83DE343EBBCFE6183D024BAFE9394D7EEF526F1E3281B2CF82884` |
