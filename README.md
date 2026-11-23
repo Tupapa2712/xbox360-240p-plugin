@@ -48,7 +48,7 @@ This free, open-source project unlocks **real 240p output** on Xbox 360 RGH — 
 
 ### What You Need
 * **Xbox 360 with RGH** (Kernel **17559**)
-* **CRT TV** connected via Component, SCART, or AV cable (set Xbox display to **480i**)
+* **CRT TV** connected via S-video, Component, SCART, or AV cable (set Xbox display to **480i**)
 * **DashLaunch** and **Aurora Dashboard**
 
 > **IMPORTANT — Not Compatible with Stealth Servers:** `t240.xex` is **NOT compatible with Xbox Live Stealth servers**. Do not load it alongside any Stealth server plugin in `launch.ini`. This project is for offline RGH/JTAG CRT use only.
