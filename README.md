@@ -5,7 +5,7 @@
 <h1 align="center">Xbox 360 Native 240p — <code>t240.xex</code> (v2.30) &amp; 240p Dream</h1>
 
 <p align="center">
-  <strong>True 240p analog CRT output for Xbox 360 + Plug-and-Play Retro Emulator</strong><br/>
+  <strong>True 240p analog CRT output for Xbox 360 RGH and BadUpdate + Plug-and-Play Retro Emulator</strong><br/>
   Created by <strong>tupapa2712</strong>
 </p>
 
