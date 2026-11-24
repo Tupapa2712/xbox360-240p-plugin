@@ -55,6 +55,7 @@ This free, open-source project unlocks **real 240p output** on Xbox 360 RGH — 
 > **Stealth Server Compatibility:**
 > - **`t240.xex` (Native Xbox 360 & XBLA games):** **Compatible** with Xbox Live Stealth servers (such as **xbGuard**, **Proto**, etc.) when loaded in its own free plugin slot in `launch.ini` (for example, `plugin5`).
 > - **`240p Dream` (Retro Emulator):** **NOT compatible with Stealth servers** — launching `240p Dream` with a Stealth plugin active will **shut down the console**. Disable your Stealth server plugin in `launch.ini` before opening `240p Dream`.
+> - **Tip (One-Click Toggle from Aurora):** If you don't want to enable and disable your stealth server manually in DashLaunch every time, you can use my Aurora utility script **[Aurora-Toggle-xbGuard](https://github.com/Tupapa2712/Aurora-Toggle-xbGuard)** to toggle it ON/OFF with a single button right from Aurora.
 >
 > **Note:** No copyrighted ROMs or BIOS files are included in the ZIP. You can use the built-in BIOS downloader in `240p Dream` or add your own legally dumped games and BIOS files.
 
@@ -82,7 +83,7 @@ This free, open-source project unlocks **real 240p output** on Xbox 360 RGH — 
 1. **Xbox 360 & XBLA loading screens, menus & level changes:**
    - Start native Xbox 360 and XBLA games from Aurora in **480i**, then press **`LT + RT + L3 + R3`** once you are in the game.
    - **If a game gets stuck on a loading screen, menu, or level transition while in 240p:** press **`LT + RT + L3 + R3`** to switch back to **480i** so it can move forward, and press **`LT + RT + L3 + R3`** again once gameplay continues.
-2. **Stealth Server Compatibility:** `t240.xex` v2.30 works with Stealth servers (like **xbGuard** or **Proto**) **only for native Xbox 360 and XBLA games**. For **`240p Dream`**, you must **disable** your Stealth server plugin in `launch.ini` first — otherwise the console will shut down when launching the emulator.
+2. **Stealth Server Compatibility:** `t240.xex` v2.30 works with Stealth servers (like **xbGuard** or **Proto**) **only for native Xbox 360 and XBLA games**. For **`240p Dream`**, you must **disable** your Stealth server plugin in `launch.ini` first — otherwise the console will shut down when launching the emulator. *(Tip: use **[Aurora-Toggle-xbGuard](https://github.com/Tupapa2712/Aurora-Toggle-xbGuard)** to toggle your stealth server ON/OFF in one click from Aurora without editing DashLaunch manually).*
 3. **Turning Off Safely:** Switch back to **480i** before shutting down; if you use the physical power button while in 240p, wait 5–10 seconds for the console to restore 480i and power off cleanly.
 
 ---
