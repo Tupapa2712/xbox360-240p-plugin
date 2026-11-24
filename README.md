@@ -32,6 +32,8 @@ This free, open-source project unlocks **real 240p output** on Xbox 360 RGH — 
 ## What's New in v2.30
 
 ### 240p Dream (Based on Salvia 360 v1.1.2)
+- **Native `256x240` & `320x240` Resolutions (Global & Per-Core):** Alongside super-resolutions (`640x240`, `1280x240`, `1920x240`, `2560x240`), `240p Dream` now supports native **`256x240`** and **`320x240`** output — configurable globally in **Video Settings** or individually per emulator in **Core Options** (applied live and saved per core).
+- **Automatic `t240.xex` Detection & `480i` Warning:** The Video menu automatically detects whether `t240.xex` is loaded in memory (showing **Active** vs. **Not Detected**) and displays a clear non-blocking notice warning that output will stay in **480i** instead of **240p** if the plugin isn't loaded.
 - **Built-in BIOS Downloader & Updated Cores:** Includes a built-in **BIOS downloader** plus updated cores (**Snes9x** with MSU-1 audio, **Atari 2600 / Stella 2014**, **blueMSX**, and **mGBA**), ready for CRT out of the box in **`2560x240`** with crisp pixels.
 - **Core Options Before You Play:** Configure **Core Options** for all **10 main cores** (PlayStation, Nintendo 64, Snes9x, Snes9x 2010, mGBA, Genesis Plus GX, Nestopia, Gambatte, Stella 2014, and blueMSX) directly from the crisp **480i main menu (`Options → Core Options`)** before launching a game — or in-game anytime with **`Select + Y`**.
 - **PlayStation Controller Choice & Vibration:** Choose between **Standard (Digital)** and **DualShock** controllers for PlayStation 1 right from Core Options, and enjoy **controller vibration (Rumble)** in both **PlayStation 1** (with DualShock) and **Nintendo 64**, with automatic vibration stop when pausing or exiting.
@@ -96,18 +98,18 @@ This free, open-source project unlocks **real 240p output** on Xbox 360 RGH — 
 | File | Size | SHA-256 |
 |---|---|---|
 | `t240.xex` (v2.30) | `102,400` B | `BF428062E2BAB19A144B117F051BCC5AB682240CF2C5F3BF1155808B129F7C50` |
-| `240p-Dream-v2.30-Complete-NoROMs-NoBIOS.zip` | `292,170,172` B | `CF8A9C62FC3A51BF6C4981682449C7A08E76B1FA52FB8E3099A4EF00318DF5A7` |
-| `default.xex` (240p Dream) | `8,134,656` B | `5A9A33B7F6126CF9BAFBB313ED4E98BF7BF38C60391A6D157719AA075BC2B52E` |
-| `pcsxr-360.xex` (PlayStation) | `23,425,024` B | `26EAC3B3CFA83DE343EBBCFE6183D024BAFE9394D7EEF526F1E3281B2CF82884` |
-| `xbox64.xex` (Nintendo 64) | `9,244,672` B | `7D69B53C23E0CFD3E057AD0D141E3BBF825AA1F9042FAA7EA04819B8A17AFF5B` |
-| `Snes9x.xex` (SNES MSU-1) | `10,371,072` B | `D9797172C6CFD096E342E3DF578EECB6DBA06CF76E295C28DA136DCB7429CFE1` |
-| `Snes9x2010.xex` (SNES) | `10,432,512` B | `B8999CD6E281F287F0C93224EC49461AE141FD05EACE3B2B97A48273C5A33B4C` |
-| `Nestopia.xex` (NES) | `11,317,248` B | `C7F87429D0FFAA798DA67FD8D3509F0C298963F2F32982B2F31275449E419958` |
-| `Genesis-Plus-GX.xex` (Genesis/MD) | `12,378,112` B | `6737B3FA20E0F9449BF24961DF6DE21F1E2C12BEA1B43083CAB2021BEF932523` |
-| `mgba.xex` (GBA) | `9,908,224` B | `0C5CB158786403E195D34AC776C792B259D02114EF0878EC423AB70BC026ED23` |
-| `Gambatte.xex` (GB/GBC) | `9,412,608` B | `B54BADC6E93D3A712EC2980BD96D83849630D561255CF795758BE33B5576A9BF` |
-| `stella2014.xex` (Atari 2600) | `9,216,000` B | `0230FDFB64BFDE7285034DEEEFB2BB596FF949B158B52D7375544C53E30D82FE` |
-| `blueMSX.xex` (MSX/MSX2) | `9,383,936` B | `7AAB323DB83C8F5FCAA4F212B09E1A0C6AEB8FDE65F0E909E43EB40FE5D9D5FC` |
+| `240p-Dream-v2.30-Complete-NoROMs-NoBIOS.zip` | `292,488,510` B | `896770507318B344B25162C7E0C29C6C307EBCBF64B0667EFC2976C7D0680178` |
+| `default.xex` (240p Dream) | `8,134,656` B | `C587CF2033838B92B59FE6C88A841577FB777753B19DF18460ED0A10A85EB398` |
+| `pcsxr-360.xex` (PlayStation) | `23,425,024` B | `5650DB4D1D85693EED86C4F897D23A1104E0C1C6904E40AF7A63D1A9F6A7CC9E` |
+| `xbox64.xex` (Nintendo 64) | `9,310,208` B | `F705AD6C81C2CF698152D5C03F3E8A1418948C688C0ED57E665AFA4098F96934` |
+| `Snes9x.xex` (SNES MSU-1) | `10,436,608` B | `F558160F6734D3FD88A74AFBF0EB6C05A3ECCA8EE6753D9DD0D3B8B5040F48F3` |
+| `Snes9x2010.xex` (SNES) | `10,465,280` B | `92DB20F22F4D3FB6F1B94D16D0CC798BD0EDC22D309D5B34A0C67AD7CDB83E49` |
+| `Nestopia.xex` (NES) | `11,350,016` B | `BA87325E8B2AA9989F3F227C514025D1F07D981438EF89A148E94A092F3A95A4` |
+| `Genesis-Plus-GX.xex` (Genesis/MD) | `12,378,112` B | `DD6E6BA2BB33518462F2C48E1C344560DDF4D3CCD28FD49E0D20FEB583A2A270` |
+| `mgba.xex` (GBA) | `9,973,760` B | `2881C7FBAEFB949D0F2CCB9AB922015E3DBD80B3041108809BD7E3621EDB139D` |
+| `Gambatte.xex` (GB/GBC) | `9,445,376` B | `05B057A745D4EB0B86A713CF309CBE1C5544F206FF503203FA31AD8DB2C59253` |
+| `stella2014.xex` (Atari 2600) | `9,248,768` B | `6999093F93020837F611D581B5EF6E080614BB8C8F7CBB63B3579B0D12DFC161` |
+| `blueMSX.xex` (MSX/MSX2) | `9,416,704` B | `A3C9701BB8E64B0F9858BEB425B58515E962A4420B70C813B82A9D7306432841` |
 
 </details>
 

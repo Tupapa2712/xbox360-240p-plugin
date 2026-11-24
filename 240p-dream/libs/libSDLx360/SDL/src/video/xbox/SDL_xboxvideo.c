@@ -1,10 +1,4 @@
 /*
- * 240p Dream & t240.xex (v2.22)
- * Desarrollado por: tupapa2712
- * "Por más que otros se basen en la lógica, los datos, la verdad y el conocimiento, yo sigo creyendo en mi mismo"
- */
-
-/*
     SDL - Simple DirectMedia Layer
     Copyright (C) 1997, 1998, 1999, 2000, 2001, 2002  Sam Lantinga
 
@@ -99,9 +93,6 @@ static int g_lutsUploaded = 0;
    funcion fija, asi que enganchar un pixel shader NULL es PANTALLA NEGRA.
    Este objeto se compila lo primero y jamas se deja de tener. */
 static IDirect3DPixelShader9* g_fallbackPS = NULL;
-/* Shader CRT 240p horizontal Sharp-Bilinear (X) + Point estricto (Y) para
- * estirado horizontal no-entero (ej. SNES 256->640) con scanlines 1:1. */
-static IDirect3DPixelShader9* g_crtSharpXPointYPS = NULL;
 /* Shader realmente enganchado ahora mismo. El overlay restaura este puntero
    en vez de volver a indexar por g_current_effect. */
 static IDirect3DPixelShader9* g_activePS = NULL;
@@ -114,9 +105,6 @@ static int g_display_overflow   = 0; /* 1 = integer scale puede salirse de panta
 static int g_display_scale_type = 0; /* 0=reduce,1=increase,2..6=escala fija 1x..5x */
 static int g_texture_width = 0;
 static int g_texture_height = 0;
-static float g_display_w = 0.0f;
-static float g_display_h = 0.0f;
-static float g_display_scale_x = 1.0f;
 static LPDIRECT3DTEXTURE9 s_capTex = NULL;
 static int s_capW   = 0;
 static int s_capH   = 0;
@@ -271,7 +259,7 @@ void HLSLBackground_draw(LPDIRECT3DDEVICE9 dev)
 	 * juego leen c1 como textureDims; sin esto, al volver del menu el efecto
 	 * muestrea con la resolucion del backbuffer y "desaparece". */
 	if (g_texture_width > 0) {
-		float cGameDims[4] = { (float)g_texture_width, (float)g_texture_height, g_display_scale_x, 0.0f };
+		float cGameDims[4] = { (float)g_texture_width, (float)g_texture_height, 0, 0 };
 		IDirect3DDevice9_SetPixelShaderConstantF(dev, 1, cGameDims, 1);
 	}
 }
@@ -476,6 +464,12 @@ static LPDIRECT3DVERTEXBUFFER9 g_overlay_vb = NULL;
 static SDL_Surface* g_overlay_surface = NULL;
 static int g_overlay_enabled = 0;
 static int g_overlay_locked = 0;
+/* La textura del juego (SDL_primary) esta bloqueada por la CPU. */
+static int g_primary_locked = 0;
+/* 1 = el Present no vuelve a bloquear el overlay ni la textura del juego: se
+ * bloquean justo antes de que la CPU pinte en ellos.  Ver
+ * SDL_XBOX_SetDeferredLock. */
+static int g_defer_lock = 0;
 static int g_current_effect = 0;
 
 /* Overscan del overlay: desplaza los bordes del quad hacia adentro (positivo)
@@ -650,33 +644,40 @@ VideoBootStrap XBOX_bootstrap = {
 };
 
 const static SDL_Rect
+	RECT_1280x720 = {0,0,1280,720},
+	RECT_1280x1024 = {0,0,1280,1024},
+	RECT_1024x768 = {0,0,1024,768},
+	RECT_800x600 = {0,0,800,600},
 	RECT_640x480 = {0,0,640,480},
-	RECT_320x240 = {0,0,320,240},
 	RECT_640x240 = {0,0,640,240},
+	RECT_320x240 = {0,0,320,240},
 	RECT_1280x240 = {0,0,1280,240},
-	RECT_1920x240 = {0,0,1920,240},
-	RECT_1280x720 = {0,0,1280,720};
+	RECT_1920x240 = {0,0,1920,240};
 
 const static SDL_Rect * const vid_modes[] = {
+	&RECT_1280x720,
+	&RECT_1280x1024,
+	&RECT_1024x768,
+	&RECT_800x600,
 	&RECT_640x480,
-	&RECT_320x240,
 	&RECT_640x240,
+	&RECT_320x240,
 	&RECT_1280x240,
 	&RECT_1920x240,
-	&RECT_1280x720,
 	NULL
 };
 
+/* ==== 240p Dream Live Bidirectional IPC ('S240' v3) ==== */
 typedef struct _SALVIA_240P_BEACON {
-	DWORD magic;
-	DWORD version;
-	DWORD is_menu;
-	DWORD width;
-	DWORD height;
-	DWORD in_game;
-	DWORD cmd;
-	DWORD plugin_ver;
-	DWORD plugin_mode;
+	DWORD magic;       /* 0x53323430 'S240' */
+	DWORD version;     /* 3 */
+	DWORD is_menu;     /* 1 = default.xex (640x480 480i), 0 = core .xex */
+	DWORD width;       /* backbuffer width */
+	DWORD height;      /* backbuffer height */
+	DWORD in_game;     /* 1 = core .xex running */
+	DWORD cmd;         /* 0=auto, 1=force 240p, 2=force 480i, 3=poweroff */
+	DWORD plugin_ver;  /* written by t240.xex */
+	DWORD plugin_mode; /* written by t240.xex */
 } SALVIA_240P_BEACON;
 
 volatile SALVIA_240P_BEACON g_salvia240_beacon = { 0x53323430u, 3u, 0u, 0u, 0u, 0u, 0u, 0u, 0u };
@@ -686,40 +687,88 @@ void SDL_XBOX_SetBeaconInfo(int is_menu, int in_game) {
 	g_salvia240_beacon.in_game = (DWORD)in_game;
 }
 
-void SDL_XBOX_SetPluginCommand(unsigned int cmd) {
+void SDL_XBOX_SetBeaconCmd(unsigned int cmd) {
 	g_salvia240_beacon.cmd = (DWORD)cmd;
 }
 
+extern LONG NTAPI XexGetModuleHandle(LPCSTR moduleName, PHANDLE hand);
+
 void SDL_XBOX_GetPluginStatus(unsigned int *plugin_ver, unsigned int *plugin_mode) {
-	if (plugin_ver) *plugin_ver = (unsigned int)g_salvia240_beacon.plugin_ver;
+	if (plugin_ver)  *plugin_ver  = (unsigned int)g_salvia240_beacon.plugin_ver;
 	if (plugin_mode) *plugin_mode = (unsigned int)g_salvia240_beacon.plugin_mode;
 }
 
-/* Desactiva el letterbox automatico de D3D9 en Xbox 360 cuando el BackBuffer es
- * una super-resolucion CRT ultrapanoramica (640x240, 1280x240, 1920x240) sobre
- * salida SD 4:3 (640x480). Sin D3DPRESENTFLAG_NO_LETTERBOX, D3D9 encoge 1280x240
- * (5.33:1) a 640x120 (~25% de altura vertical = franja aplastada). */
-static void XBOX_ApplyNoLetterboxScaler(int setExplicitScaler)
-{
-	XVIDEO_MODE vm;
-	ZeroMemory(&vm, sizeof(vm));
-	XGetVideoMode(&vm);
+int SDL_XBOX_IsT240Loaded(void) {
+	HANDLE hMod = NULL;
+	if (XexGetModuleHandle("t240.xex", &hMod) >= 0 && hMod != NULL)
+		return 1;
+	if (g_salvia240_beacon.plugin_ver != 0)
+		return 1;
+	return 0;
+}
 
-	D3D_PP.Flags = D3DPRESENTFLAG_NO_LETTERBOX;
-	ZeroMemory(&D3D_PP.VideoScalerParameters, sizeof(D3D_PP.VideoScalerParameters));
+/* ==== CRT SwitchRes Horizontal Resolution (256/320/640/1280/1920/2560 x 240) ==== */
+static int g_crt_super_res_w = 640; /* 256, 320, 640, 1280, 1920, or 2560 */
+static IDirect3DSurface9*       g_superResRT  = NULL;
+static LPDIRECT3DTEXTURE9       g_superResTex = NULL;
+static LPDIRECT3DVERTEXBUFFER9  g_superResVB  = NULL;
+static int                      g_superResW   = 0;
+static int                      g_superResH   = 0;
+static IDirect3DPixelShader9*   g_crtSharpXPointYPS  = NULL;
+static IDirect3DPixelShader9*   g_crtSuperResDownPS  = NULL;
 
-	if (setExplicitScaler &&
-	    vm.dwDisplayWidth >= 320 && vm.dwDisplayHeight >= 200 &&
-	    D3D_PP.BackBufferWidth >= 320 && D3D_PP.BackBufferHeight >= 200)
-	{
-		D3D_PP.VideoScalerParameters.ScalerSourceRect.x1 = 0;
-		D3D_PP.VideoScalerParameters.ScalerSourceRect.y1 = 0;
-		D3D_PP.VideoScalerParameters.ScalerSourceRect.x2 = (LONG)D3D_PP.BackBufferWidth;
-		D3D_PP.VideoScalerParameters.ScalerSourceRect.y2 = (LONG)D3D_PP.BackBufferHeight;
-		D3D_PP.VideoScalerParameters.ScaledOutputWidth  = vm.dwDisplayWidth;
-		D3D_PP.VideoScalerParameters.ScaledOutputHeight = vm.dwDisplayHeight;
-		D3D_PP.VideoScalerParameters.FilterProfile      = 0;
+void SDL_XBOX_SetCrtSuperResWidth(int super_w) {
+	if (super_w != 256 && super_w != 320 && super_w != 640 &&
+	    super_w != 1280 && super_w != 1920 && super_w != 2560)
+		super_w = 640;
+	g_crt_super_res_w = super_w;
+}
+
+int SDL_XBOX_GetCrtSuperResWidth(void) {
+	return g_crt_super_res_w;
+}
+
+static void XBOX_ReleaseSuperResResources(void) {
+	if (g_superResVB)  { IDirect3DVertexBuffer9_Release(g_superResVB); g_superResVB  = NULL; }
+	if (g_superResRT)  { IDirect3DSurface9_Release(g_superResRT);      g_superResRT  = NULL; }
+	if (g_superResTex) { IDirect3DTexture9_Release(g_superResTex);     g_superResTex = NULL; }
+	g_superResW = 0;
+	g_superResH = 0;
+}
+
+static int XBOX_EnsureSuperResResources(int target_w, int target_h) {
+	if (!D3D_Device || target_w <= 0 || target_w == 640 || target_h <= 0) return 0;
+	if (g_superResRT && g_superResTex && g_superResVB &&
+	    g_superResW == target_w && g_superResH == target_h) {
+		return 1;
 	}
+	XBOX_ReleaseSuperResResources();
+
+	{
+		D3DSURFACE_PARAMETERS srParams;
+		ZeroMemory(&srParams, sizeof(srParams));
+		/* Place Super-Res RT at EDRAM tile 1024 (1024..1503 for 2560x240) so it NEVER
+		 * overlaps the frontend backbuffer (0..119) or HW cores like xbox64/pcsxr (120..599). */
+		srParams.Base = 1024;
+		if (FAILED(IDirect3DDevice9_CreateRenderTarget(D3D_Device, (UINT)target_w, (UINT)target_h,
+		        D3DFMT_X8R8G8B8, D3DMULTISAMPLE_NONE, 0, FALSE, &g_superResRT, &srParams))) {
+			XBOX_ReleaseSuperResResources();
+			return 0;
+		}
+	}
+	if (FAILED(IDirect3DDevice9_CreateTexture(D3D_Device, (UINT)target_w, (UINT)target_h,
+	        1, 0, D3DFMT_X8R8G8B8, D3DPOOL_DEFAULT, &g_superResTex, NULL))) {
+		XBOX_ReleaseSuperResResources();
+		return 0;
+	}
+	if (FAILED(IDirect3DDevice9_CreateVertexBuffer(D3D_Device, sizeof(VERTEX) * 4,
+	        D3DUSAGE_WRITEONLY, 0, D3DPOOL_DEFAULT, &g_superResVB, NULL))) {
+		XBOX_ReleaseSuperResResources();
+		return 0;
+	}
+	g_superResW = target_w;
+	g_superResH = target_h;
+	return 1;
 }
 
 int XBOX_VideoInit(_THIS, SDL_PixelFormat *vformat)
@@ -755,10 +804,11 @@ int XBOX_VideoInit(_THIS, SDL_PixelFormat *vformat)
 		D3D_PP.BackBufferWidth = vid_modes[g_screen_resolution]->w;
 		D3D_PP.BackBufferHeight = vid_modes[g_screen_resolution]->h;
 	}
-	g_salvia240_beacon.width = D3D_PP.BackBufferWidth;
-	g_salvia240_beacon.height = D3D_PP.BackBufferHeight;
 
     D3D_PP.BackBufferFormat = D3DFMT_X8R8G8B8;
+    D3D_PP.Flags = D3DPRESENTFLAG_NO_LETTERBOX;
+    g_salvia240_beacon.width  = D3D_PP.BackBufferWidth;
+    g_salvia240_beacon.height = D3D_PP.BackBufferHeight;
     
     // En Xbox 360, estas opciones son recomendadas para rendimiento
     //D3D_PP.EnableAutoDepthStencil = TRUE;
@@ -770,8 +820,6 @@ int XBOX_VideoInit(_THIS, SDL_PixelFormat *vformat)
 #else
     D3D_PP.PresentationInterval = D3DPRESENT_INTERVAL_ONE;
 #endif
-
-    XBOX_ApplyNoLetterboxScaler(1);
 
     /* -- Banderas de CreateDevice, y por que estas ---------------------------
      *
@@ -820,7 +868,7 @@ int XBOX_VideoInit(_THIS, SDL_PixelFormat *vformat)
      *
      * NO se activa D3DCREATE_ASYNCHRONOUS_SWAPS todavia: cambia el momento en
      * que vuelve el Present, y este frontend tiene su propio framepacing
-     * (Sync::limit_fps) calibrado contra el Present actual.  Una cosa cada
+     * (Sync::endFrame) calibrado contra el Present actual.  Una cosa cada
      * vez, o el log no dira cual fue.
      *
      * NO se activa D3DCREATE_NO_SHADER_PATCHING: Xenos parchea el vertex
@@ -835,10 +883,14 @@ int XBOX_VideoInit(_THIS, SDL_PixelFormat *vformat)
                                      XBOX_D3D_FLAGS,
                                      &D3D_PP, &D3D_Device);
 
-        if (FAILED(hr)) {
-            /* Si algun modo de dash rechaza VideoScalerParameters explicitos,
-             * reintentar manteniendo D3DPRESENTFLAG_NO_LETTERBOX con scaler por defecto. */
-            XBOX_ApplyNoLetterboxScaler(0);
+        /* ★ Red de seguridad del experimento.  Si esa combinacion de
+         * banderas no le gusta al driver, sin esto el frontend se queda sin
+         * video ENTERO y sin pista de por que -- el unico sintoma seria un
+         * arranque en negro.  Reintentar con 0 deja el comportamiento de
+         * siempre y una linea en el log que lo dice. */
+        if (FAILED(hr) && XBOX_D3D_FLAGS != 0) {
+            OutputDebugStringA("[XBOXVIDEO] CreateDevice fallo con las banderas"
+                               " nuevas; reintento sin ellas\n");
             hr = IDirect3D9_CreateDevice(D3D, 0, D3DDEVTYPE_HAL, NULL,
                                          0,
                                          &D3D_PP, &D3D_Device);
@@ -879,7 +931,7 @@ int XBOX_VideoInit(_THIS, SDL_PixelFormat *vformat)
          * propia latencia de la llamada y deja de actuar.
          *
          * ★ YA NO SE PONE AQUI PARA TODOS: solo con la sincronizacion "Video
-         * adaptativo" (SDL_XBOX_SetAdaptiveVSync, desde Sync::limit_fps).  Puesto
+         * adaptativo" (SDL_XBOX_SetAdaptiveVSync, desde Sync::configure).  Puesto
          * siempre rasgaba cores que van sobrados (Gambatte, Genesis Plus GX): con
          * el pacer por vblanks, el present despues de cada vblank saltado sale
          * "tarde".  Aqui se lee el valor de fabrica, que es el que tenia el
@@ -969,8 +1021,6 @@ static void XBOX_UpdateVertexBuffer(int tex_w, int tex_h, float aspect_ratio)
 	float bbh = (float)D3D_PP.BackBufferHeight;
 	float bb_ratio;
 	int is_crt_240p = (bbh <= 256.0f && bbw > bbh * 1.5f);
-	float crt_bb_ratio = is_crt_240p ? (4.0f / 3.0f) : (bbw / bbh);
-	float crt_x_stretch = is_crt_240p ? (bbw / (bbh * (4.0f / 3.0f))) : 1.0f;
 
 	/* Si el contenido se rota 90 o 270, el ancho y alto efectivos se
 	   intercambian para todo el calculo de tamano/posicion del quad. La
@@ -982,28 +1032,27 @@ static void XBOX_UpdateVertexBuffer(int tex_w, int tex_h, float aspect_ratio)
 		tex_h = tmp;
 	}
 
-	if (g_display_fullscreen) {
-		/* Scale to fill screen maintaining aspect ratio (including 15kHz CRT 240p super-res) */
-		if (aspect_ratio < -0.5f) {
-			/* Rellenar pantalla completa (Stretch to backbuffer edges) */
+	if (is_crt_240p && tex_w > 0 && tex_h > 0) {
+		/* 240p Dream CRT (640x240, 1280x240, 1920x240):
+		 *  - Si el nucleo entrega <= 240 lineas (SNES/NES/Genesis/PS1 1x/N64 1x):
+		 *    Y estrictamente 1:1 (cero escalado vertical) y X llenando el 4:3 completo.
+		 *  - Si el nucleo entrega > 240 lineas (ej. N64/PS1 a resolucion interna 2x 640x480):
+		 *    escala limpiamente a 240 lineas manteniendo la salida fisica 240p intacta. */
+		display_w = bbw;
+		display_h = (tex_h <= (int)bbh) ? (float)tex_h : bbh;
+	} else if (g_display_fullscreen) {
+		/* Scale to fill screen maintaining aspect ratio */
+		float bb_ratio = bbw / bbh;
+
+		if (aspect_ratio <= 0.0f)
+			aspect_ratio = (float)tex_w / (float)tex_h;
+
+		if (aspect_ratio > bb_ratio) {
 			display_w = bbw;
-			display_h = bbh;
+			display_h = bbw / aspect_ratio;
 		} else {
-			bb_ratio = crt_bb_ratio;
-
-			if (aspect_ratio <= 0.0f)
-				aspect_ratio = (float)tex_w / (float)tex_h;
-
-			if (is_crt_240p && aspect_ratio <= (4.0f / 3.0f) + 0.15f) {
-				display_w = bbw;
-				display_h = bbh;
-			} else if (aspect_ratio > bb_ratio) {
-				display_w = bbw;
-				display_h = (bbh * bb_ratio) / aspect_ratio;
-			} else {
-				display_h = bbh;
-				display_w = bbh * aspect_ratio * crt_x_stretch;
-			}
+			display_h = bbh;
+			display_w = bbh * aspect_ratio;
 		}
 	} else {
 		/* Pixel perfect: exact size based on effect scale factor */
@@ -1014,37 +1063,7 @@ static void XBOX_UpdateVertexBuffer(int tex_w, int tex_h, float aspect_ratio)
 		int fixed = (g_display_scale_type >= 2) ? (g_display_scale_type - 1) : 0;
 		if (fixed > 0) scale = fixed;
 
-		if (is_crt_240p && tex_w > 0 && tex_h > 0 && fixed == 0) {
-			/* CRT 240p (640x240, 1280x240, 1920x240):
-			   Y estrictamente 1:1 (240p nativo sin escalado vertical) y X llenando
-			   el 100% del ancho 4:3 para sistemas 4:3 (ej. SNES 256x224 -> 640x224
-			   en backbuffer 640x240, cero barras negras laterales). */
-			int maxscale_h = (int)floor(bbh / (float)tex_h);
-			if (maxscale_h < 1) maxscale_h = 1;
-			if (aspect_ratio < -0.5f || aspect_ratio <= (4.0f / 3.0f) + 0.15f) {
-				display_w = bbw;
-			} else {
-				int maxscale_w = (int)floor(bbw / (float)tex_w);
-				if (maxscale_w < 1) maxscale_w = 1;
-				if (g_display_overflow && (tex_w * maxscale_w < (int)bbw)) {
-					maxscale_w++;
-				}
-				display_w = (float)(tex_w * maxscale_w);
-			}
-			display_h = (tex_h <= (int)bbh) ? (float)(tex_h * maxscale_h) : bbh;
-		} else if (bbh <= 256.0f && bbw <= 320.0f && tex_w > 0 && tex_h > 0 && fixed == 0 &&
-		           tex_w <= (int)bbw && aspect_ratio > 0.0f && aspect_ratio <= (4.0f / 3.0f) + 0.15f) {
-			/* 320x240 nativo con escalado entero: evitar estirado fraccional 256->298 con POINT
-			   (causaba dientes de sierra horizontales cuando el core reportaba aspect 4:3). */
-			display_w = (float)tex_w;
-			display_h = (float)tex_h;
-		} else if (aspect_ratio < -0.5f && tex_h > 0) {
-			/* 320x240 con Integer Scale + Rellenar horizontal: Y entero 1x, X llena 320 */
-			int maxscale_h = (int)floor(bbh / (float)tex_h);
-			if (maxscale_h < 1) maxscale_h = 1;
-			display_w = bbw;
-			display_h = (float)(tex_h * maxscale_h);
-		} else if (aspect_ratio > 0.0f && tex_w > 0 && tex_h > 0) {
+		if (aspect_ratio > 0.0f && tex_w > 0 && tex_h > 0) {
 			/* Aspect ratio definido (4:3, 16:9, etc.): Y entero (crisp scanlines),
 			   X estirado para cumplir el ratio elegido. Comportamiento estandar
 			   de emuladores: lineas horizontales nitidas, ancho proporcional. */
@@ -1082,23 +1101,18 @@ static void XBOX_UpdateVertexBuffer(int tex_w, int tex_h, float aspect_ratio)
 
 		/* Clamp to backbuffer if larger */
 		if (!g_display_overflow && (display_w > bbw || display_h > bbh)) {
-			if (is_crt_240p) {
-				if (display_w > bbw) display_w = bbw;
-				if (display_h > bbh) display_h = bbh;
+			float clamp_ratio = aspect_ratio;
+			if (clamp_ratio <= 0.0f)
+				clamp_ratio = (float)tex_w / (float)tex_h;
+
+			bb_ratio = bbw / bbh;
+
+			if (clamp_ratio > bb_ratio) {
+				display_w = bbw;
+				display_h = (float)floor(bbw / clamp_ratio);
 			} else {
-				float clamp_ratio = aspect_ratio;
-				if (clamp_ratio <= 0.0f)
-					clamp_ratio = (float)tex_w / (float)tex_h;
-
-				bb_ratio = bbw / bbh;
-
-				if (clamp_ratio > bb_ratio) {
-					display_w = bbw;
-					display_h = (float)floor(bbw / clamp_ratio);
-				} else {
-					display_h = bbh;
-					display_w = (float)floor(bbh * clamp_ratio);
-				}
+				display_h = bbh;
+				display_w = (float)floor(bbh * clamp_ratio);
 			}
 		}
 	}
@@ -1116,9 +1130,6 @@ static void XBOX_UpdateVertexBuffer(int tex_w, int tex_h, float aspect_ratio)
 	g_visible_rect.top    = (LONG)offset_y;
 	g_visible_rect.right  = (LONG)(offset_x + display_w);
 	g_visible_rect.bottom = (LONG)(offset_y + display_h);
-	g_display_w = display_w;
-	g_display_h = display_h;
-	g_display_scale_x = (tex_w > 0 && display_w > 0.0f) ? (display_w / (float)tex_w) : 1.0f;
 
 	IDirect3DVertexBuffer9_Lock(vertexBuffer, 0, 0, (BYTE **)&pLockedVertexBuffer, 0L);
 
@@ -1165,13 +1176,10 @@ static void XBOX_UpdateVertexBuffer(int tex_w, int tex_h, float aspect_ratio)
 	IDirect3DVertexBuffer9_Unlock(vertexBuffer);
 }
 
-void XBOX_SelectEffect(int effectID);
-
 void SDL_XBOX_SetDisplaySize(float aspect_ratio)
 {
 	g_display_aspect_ratio = aspect_ratio;
 	XBOX_UpdateVertexBuffer(g_texture_width, g_texture_height, aspect_ratio);
-	if (g_fallbackPS && g_texture_width > 0) XBOX_SelectEffect(g_current_effect);
 	IDirect3DDevice9_Clear(D3D_Device, 0, NULL, D3DCLEAR_TARGET, 0x00000000, 1.0f, 0L);
 }
 
@@ -1179,7 +1187,6 @@ void SDL_XBOX_SetDisplayFullscreen(int fullscreen)
 {
 	g_display_fullscreen = fullscreen;
 	XBOX_UpdateVertexBuffer(g_texture_width, g_texture_height, g_display_aspect_ratio);
-	if (g_fallbackPS && g_texture_width > 0) XBOX_SelectEffect(g_current_effect);
 	IDirect3DDevice9_Clear(D3D_Device, 0, NULL, D3DCLEAR_TARGET, 0x00000000, 1.0f, 0L);
 }
 
@@ -1188,7 +1195,6 @@ void SDL_XBOX_SetDisplayOverflow(int type)
 	g_display_scale_type = type;
 	g_display_overflow   = (type != 0);   /* reduce(0) recorta a pantalla; increase y 1x-5x pueden salirse */
 	XBOX_UpdateVertexBuffer(g_texture_width, g_texture_height, g_display_aspect_ratio);
-	if (g_fallbackPS && g_texture_width > 0) XBOX_SelectEffect(g_current_effect);
 	IDirect3DDevice9_Clear(D3D_Device, 0, NULL, D3DCLEAR_TARGET, 0x00000000, 1.0f, 0L);
 }
 
@@ -1197,7 +1203,6 @@ void SDL_XBOX_SetRotation(int rotation)
 	/* Saneo: solo 0..3 son validos (libretro). Cualquier otra cosa = sin rotacion. */
 	g_screen_rotation = (rotation >= 0 && rotation <= 3) ? rotation : 0;
 	XBOX_UpdateVertexBuffer(g_texture_width, g_texture_height, g_display_aspect_ratio);
-	if (g_fallbackPS && g_texture_width > 0) XBOX_SelectEffect(g_current_effect);
 	IDirect3DDevice9_Clear(D3D_Device, 0, NULL, D3DCLEAR_TARGET, 0x00000000, 1.0f, 0L);
 }
 
@@ -1490,7 +1495,14 @@ void SDL_XBOX_SetAdaptiveVSync(int enabled)
 	if (g_xboxFlipCSInit) LeaveCriticalSection(&g_xboxFlipCS);
 }
 
-void SDL_XBOX_SetVSync(int enabled)
+/* Reset del device con D3D_PP, rehaciendo los recursos D3DPOOL_DEFAULT del
+ * frontend (los vertex buffers) y el estado D3D que el Reset pierde.  Con
+ * setInterval cambia antes el intervalo de presentacion base; sin el, lo deja
+ * como esta.  Lo usan SDL_XBOX_SetVSync y SDL_XBOX_SetRefreshOverride: en esta
+ * ultima el Reset es lo que aplica el modo de video (D3D llama ahi a
+ * VdSetDisplayMode).  OJO: destruye tambien los recursos D3DPOOL_DEFAULT de
+ * los cores que dibujan por hardware, que no se enteran. */
+static void XBOX_ResetDevice(int setInterval, UINT interval)
 {
 	SDL_VideoDevice *this = current_video;
 	D3DLOCKED_RECT d3dlr;
@@ -1502,8 +1514,10 @@ void SDL_XBOX_SetVSync(int enabled)
 	if (g_xboxFlipCSInit) EnterCriticalSection(&g_xboxFlipCS);
 
 	/* Unlock game texture before Reset */
-	if (this && this->hidden && this->hidden->SDL_primary)
+	if (this && this->hidden && this->hidden->SDL_primary) {
 		IDirect3DTexture9_UnlockRect(this->hidden->SDL_primary, 0);
+		g_primary_locked = 0;
+	}
 
 	/* Unlock overlay texture if locked */
 	if (g_overlay_texture && g_overlay_locked) {
@@ -1517,6 +1531,7 @@ void SDL_XBOX_SetVSync(int enabled)
 	//HLSLBackground_shutdown();
 
 	/* Release D3DPOOL_DEFAULT resources (lost on Reset) */
+	XBOX_ReleaseSuperResResources();
 	if (vertexBuffer) {
 		IDirect3DVertexBuffer9_Release(vertexBuffer);
 		vertexBuffer = NULL;
@@ -1527,15 +1542,11 @@ void SDL_XBOX_SetVSync(int enabled)
 		g_overlay_vb = NULL;
 	}
 
-	/* Modify PresentationInterval & preserve NO_LETTERBOX scaler across Reset */
-	D3D_PP.PresentationInterval = enabled ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;
-	XBOX_ApplyNoLetterboxScaler(1);
+	/* Intervalo de presentacion base, si se pide */
+	if (setInterval) D3D_PP.PresentationInterval = interval;
 
 	/* Reset device with new presentation parameters */
-	if (FAILED(IDirect3DDevice9_Reset(D3D_Device, &D3D_PP))) {
-		XBOX_ApplyNoLetterboxScaler(0);
-		IDirect3DDevice9_Reset(D3D_Device, &D3D_PP);
-	}
+	IDirect3DDevice9_Reset(D3D_Device, &D3D_PP);
 
 	/* Recreate game vertex buffer (D3DPOOL_DEFAULT fue destruido) */
 	IDirect3DDevice9_CreateVertexBuffer(D3D_Device, sizeof(triangleStripVertices),
@@ -1550,6 +1561,7 @@ void SDL_XBOX_SetVSync(int enabled)
 	/* Re-lock game texture (CPU-cached, sobrevive al Reset) */
 	if (this && this->hidden && this->hidden->SDL_primary) {
 		IDirect3DTexture9_LockRect(this->hidden->SDL_primary, 0, &d3dlr, NULL, 0);
+		g_primary_locked = 1;
 		if (this->screen) {
 			this->screen->pixels = d3dlr.pBits;
 			this->screen->pitch = d3dlr.Pitch;
@@ -1579,8 +1591,8 @@ void SDL_XBOX_SetVSync(int enabled)
 	IDirect3DDevice9_SetVertexDeclaration(D3D_Device, g_pGradientVertexDecl);
 	D3DDevice_SetRenderState(D3D_Device, D3DRS_VIEWPORTENABLE, FALSE);
 
-	D3DDevice_SetSamplerState(D3D_Device, 0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
-	D3DDevice_SetSamplerState(D3D_Device, 0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+	D3DDevice_SetSamplerState(D3D_Device, 0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+	D3DDevice_SetSamplerState(D3D_Device, 0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
 
 	XBOX_RebindGameTexture(this);
 	if (vertexBuffer)
@@ -1594,6 +1606,69 @@ void SDL_XBOX_SetVSync(int enabled)
 	IDirect3DDevice9_Clear(D3D_Device, 0, NULL, D3DCLEAR_TARGET, 0x00000000, 1.0f, 0L);
 
 	if (g_xboxFlipCSInit) LeaveCriticalSection(&g_xboxFlipCS);
+}
+
+void SDL_XBOX_SetVSync(int enabled)
+{
+	XBOX_ResetDevice(1, enabled ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE);
+}
+
+/* ===== REFRESCO DEL PANEL FORZADO ==========================================
+ * Funciones del kernel sin documentar.  Prototipos deducidos de las llamadas
+ * que hacen d3d9.lib (3D estereoscopico) y xav.lib (proteccion de salida del
+ * reproductor de video) y del codigo del kernel 17559:
+ *
+ *   VdSetDisplayModeOverride(ancho, alto, hz, flags, info)
+ *     Pide un modo de la tabla del kernel (0x8005a260 en 17559): region AV,
+ *     tipo de cable, ancho, alto, refresco y barrido tienen que coincidir.
+ *     flags bit 1 (0x2) = progresivo (busca entrelazado = !(flags & 2)).
+ *     info = NULL o _VD_DISPLAY_MODE_OVERRIDE_INFO (solo para el 3D).
+ *     Devuelve != 0 si el modo existe.  (0, 0, 0, 0, NULL) quita el forzado.
+ *     Solo cambia lo que dice XGetVideoMode: la salida cambia en el siguiente
+ *     Reset del device, cuando D3D llama a VdSetDisplayMode.
+ *
+ *   ExGetXConfigSetting(categoria, ajuste, buf, tam, &tamReq)
+ *     XCONFIG_USER_CATEGORY (3), XCONFIG_USER_RETAIL_FLAGS (0x0C): el bit
+ *     0x400 es la respuesta "la pantalla admite 50 Hz" del panel de control
+ *     (el reproductor de video del XDK lo lee como "PAL-50 compatible"). */
+DWORD VdSetDisplayModeOverride(DWORD width, DWORD height, float refreshHz,
+                               DWORD flags, void *pInfo);
+LONG  ExGetXConfigSetting(WORD category, WORD setting, void *pBuffer,
+                          WORD cbBuffer, WORD *pcbRequired);
+
+int SDL_XBOX_DisplaySupports50Hz(void)
+{
+	DWORD retail = 0;
+	WORD  req = 0;
+	if (ExGetXConfigSetting(3, 0x0C, &retail, (WORD)sizeof(retail), &req) < 0 || req < sizeof(retail))
+		return 0;
+	return (retail & 0x400) ? 1 : 0;
+}
+
+int SDL_XBOX_SetRefreshOverride(float hz, int reset)
+{
+	DWORD ret;
+
+	/* 240p Dream CRT protection: never switch to 50Hz PAL override while in 240p NTSC mode */
+	if (hz > 0.0f && g_salvia240_beacon.in_game && D3D_PP.BackBufferHeight <= 256)
+		return 0;
+
+	if (hz > 0.0f) {
+		/* Mismo ancho, alto y barrido que la salida actual: solo cambia el
+		 * refresco (en los modos CEA el reloj de pixel es el mismo y solo se
+		 * alarga el total horizontal, p. ej. 2200 -> 2640 en 1080p). */
+		XVIDEO_MODE vm;
+		ZeroMemory(&vm, sizeof(vm));
+		XGetVideoMode(&vm);
+		ret = VdSetDisplayModeOverride(vm.dwDisplayWidth, vm.dwDisplayHeight, hz,
+		                               vm.fIsInterlaced ? 0 : 2, NULL);
+	} else {
+		ret = VdSetDisplayModeOverride(0, 0, 0.0f, 0, NULL);
+	}
+	if (ret == 0) return 0;
+
+	if (reset && D3D_Device) XBOX_ResetDevice(0, 0);
+	return 1;
 }
 
 /* ---- Overlay system ---- */
@@ -1727,8 +1802,18 @@ static void XBOX_DrawOverlay(LPDIRECT3DTEXTURE9 game_texture, int useAlphaFix)
 
 	if (!g_overlay_enabled || !g_overlay_texture || !g_overlay_vb) return;
 
-	/* Unlock overlay texture so GPU can read it */
+	/* Unlock overlay texture so GPU can read it.
+	 *
+	 * Puede llegar aqui desbloqueada (SDL_XBOX_SetDeferredLock).  Entonces se
+	 * bloquea y desbloquea en el acto: el LockRect espera a que la GPU haya
+	 * terminado con el overlay del frame ANTERIOR (a estas alturas, nada), y el
+	 * UnlockRect es lo que vuelca a memoria lo que la CPU haya pintado
+	 * (D3DUSAGE_CPU_CACHED_MEMORY: "D3D ensures coherency with the GPU by
+	 * flushing the modified range at Unlock time", d3d9.h). */
+	if (!g_overlay_locked)
+		IDirect3DTexture9_LockRect(g_overlay_texture, 0, &d3dlr, NULL, 0);
 	IDirect3DTexture9_UnlockRect(g_overlay_texture, 0);
+	g_overlay_locked = 0;
 
 	/* Enable alpha blending */
 	IDirect3DDevice9_SetRenderState(D3D_Device, D3DRS_ALPHABLENDENABLE, TRUE);
@@ -1766,10 +1851,81 @@ static void XBOX_DrawOverlay(LPDIRECT3DTEXTURE9 game_texture, int useAlphaFix)
 	IDirect3DDevice9_SetSamplerState(D3D_Device, 0, D3DSAMP_MINFILTER, g_current_sampler_filter);
 	IDirect3DDevice9_SetSamplerState(D3D_Device, 0, D3DSAMP_MAGFILTER, g_current_sampler_filter);
 
-	/* Re-lock overlay texture so the app can keep drawing to it */
-	IDirect3DTexture9_LockRect(g_overlay_texture, 0, &d3dlr, NULL, 0);
-	g_overlay_surface->pixels = d3dlr.pBits;
-	g_overlay_surface->pitch = d3dlr.Pitch;
+	/* El re-bloqueo para que la aplicacion siga pintando se hace DESPUES del
+	 * Present (XBOX_RelockAfterPresent), contra el fence que se inserta justo
+	 * antes de el: aqui, en mitad del frame, la CPU se quedaria esperando a que
+	 * la GPU terminase todo lo encolado -el frame entero del core, el quad del
+	 * juego y el overlay- y la CPU y la GPU irian por turnos (medido con mGBA
+	 * por Direct3D: 1,1 ms por frame a 1x, 1,9 a 2x y 3,3 a 3x). */
+}
+
+/* === Fence del frame y re-bloqueo =============================================
+ *
+ * Por que hace falta un fence PROPIO justo antes del Present.  LockRect llama a
+ * BlockUntilNotBusy, que espera al fence de la ultima referencia del ring
+ * buffer al recurso (`Fence` en D3DResource, d3d9.h).  Si desde que se uso la
+ * textura no se ha insertado ningun fence, D3D lo inserta en ese momento, o
+ * sea DESPUES del Present: y como el swap es sincrono (el device se crea sin
+ * D3DCREATE_ASYNCHRONOUS_SWAPS), bloquear despues del Present esperaba al
+ * vblank del frame que se acaba de presentar.  La CPU y la pantalla iban por
+ * turnos y cualquier core que no cupiese entero en un vblank -emulacion mas
+ * escalado mas shader- perdia uno completo: era la ralentizacion de la
+ * sincronizacion "Video" desde el commit a5082658679.
+ *
+ * Con el fence insertado antes del Present, todos los recursos del frame
+ * quedan atados a el, y bloquearlos despues solo espera a que la GPU haya
+ * DIBUJADO el frame, que es justo despues del swap del frame ANTERIOR: un
+ * frame en vuelo, CPU y GPU en paralelo. */
+static void XBOX_EndFrameFence(void)
+{
+	IDirect3DDevice9_InsertFence(D3D_Device);
+}
+
+/* Despues del Present: vuelve a bloquear la textura del juego y el overlay para
+ * que la aplicacion siga pintando, salvo en modo diferido (el bucle principal),
+ * donde se bloquean justo antes de pintar (SDL_XBOX_SyncGameTexture,
+ * SDL_XBOX_SyncOverlay). */
+static void XBOX_RelockAfterPresent(_THIS, SDL_Surface *surface)
+{
+	D3DLOCKED_RECT d3dlr;
+
+	if (g_defer_lock)
+		return;
+
+	if (!g_extGameTex && this->hidden->SDL_primary && !g_primary_locked)
+	{
+		IDirect3DTexture9_LockRect(this->hidden->SDL_primary, 0, &d3dlr, NULL, 0);
+		if (surface) {
+			surface->pixels = d3dlr.pBits;
+			surface->pitch = d3dlr.Pitch;
+		}
+		g_primary_locked = 1;
+	}
+
+	if (g_overlay_enabled && g_overlay_texture && g_overlay_surface && !g_overlay_locked) {
+		IDirect3DTexture9_LockRect(g_overlay_texture, 0, &d3dlr, NULL, 0);
+		g_overlay_surface->pixels = d3dlr.pBits;
+		g_overlay_surface->pitch = d3dlr.Pitch;
+		g_overlay_locked = 1;
+	}
+}
+
+/* Antes de dibujar: la textura del juego tiene que estar desbloqueada para que
+ * la GPU la lea, y es el UnlockRect el que vuelca la cache de la CPU
+ * (D3DUSAGE_CPU_CACHED_MEMORY).  Si llega desbloqueada (Present diferido sin
+ * frame nuevo del core) se bloquea antes, por si alguien ha pintado en ella sin
+ * sincronizar: la espera, si la hay, es al frame anterior. */
+static void XBOX_UnlockGameTexture(_THIS)
+{
+	D3DLOCKED_RECT d3dlr;
+
+	if (g_extGameTex || !this->hidden->SDL_primary)
+		return;
+
+	if (!g_primary_locked)
+		IDirect3DTexture9_LockRect(this->hidden->SDL_primary, 0, &d3dlr, NULL, 0);
+	IDirect3DTexture9_UnlockRect(this->hidden->SDL_primary, 0);
+	g_primary_locked = 0;
 }
 
 
@@ -1826,6 +1982,56 @@ SDL_Surface* SDL_XBOX_GetOverlay(void)
 	return g_overlay_surface;
 }
 
+/* Con defer = 1, el siguiente Present no vuelve a bloquear la textura del juego
+ * ni el overlay (XBOX_RelockAfterPresent), y quien pinte despues en ellos tiene
+ * que llamar antes a SDL_XBOX_SyncGameTexture / SDL_XBOX_SyncOverlay.  Lo usa
+ * el bucle principal de Salvia: asi la espera a la GPU, si la hay, cae lo mas
+ * tarde posible, justo antes de pintar. */
+void SDL_XBOX_SetDeferredLock(int defer)
+{
+	g_defer_lock = defer;
+}
+
+/* Antes de pintar en el overlay tras un Present diferido: espera a que la GPU
+ * haya dibujado el frame anterior (normalmente ya lo ha hecho) y lo deja
+ * bloqueado.  Si ya lo esta, no hace nada. */
+void SDL_XBOX_SyncOverlay(void)
+{
+	D3DLOCKED_RECT d3dlr;
+
+	if (!g_overlay_texture || !g_overlay_surface || g_overlay_locked) return;
+
+	if (g_xboxFlipCSInit) EnterCriticalSection(&g_xboxFlipCS);
+	if (!g_overlay_locked) {
+		IDirect3DTexture9_LockRect(g_overlay_texture, 0, &d3dlr, NULL, 0);
+		g_overlay_surface->pixels = d3dlr.pBits;
+		g_overlay_surface->pitch = d3dlr.Pitch;
+		g_overlay_locked = 1;
+	}
+	if (g_xboxFlipCSInit) LeaveCriticalSection(&g_xboxFlipCS);
+}
+
+/* Lo mismo para la textura del juego, antes de copiar en ella un frame del
+ * core.  Con textura externa (core que dibuja por Direct3D) no hace nada. */
+void SDL_XBOX_SyncGameTexture(void)
+{
+	SDL_VideoDevice *this = current_video;
+	D3DLOCKED_RECT d3dlr;
+
+	if (g_primary_locked || g_extGameTex || !this || !this->hidden || !this->hidden->SDL_primary) return;
+
+	if (g_xboxFlipCSInit) EnterCriticalSection(&g_xboxFlipCS);
+	if (!g_primary_locked) {
+		IDirect3DTexture9_LockRect(this->hidden->SDL_primary, 0, &d3dlr, NULL, 0);
+		if (this->screen) {
+			this->screen->pixels = d3dlr.pBits;
+			this->screen->pitch = d3dlr.Pitch;
+		}
+		g_primary_locked = 1;
+	}
+	if (g_xboxFlipCSInit) LeaveCriticalSection(&g_xboxFlipCS);
+}
+
 void SDL_XBOX_SetOverlayEnabled(int enabled)
 {
 	if (enabled && !g_overlay_surface)
@@ -1857,6 +2063,7 @@ SDL_Surface *XBOX_SetVideoMode(_THIS, SDL_Surface *current,
 	/* Cleanup previous D3D texture if re-setting video mode */
 	if (this->hidden->SDL_primary) {
 		IDirect3DTexture9_UnlockRect(this->hidden->SDL_primary, 0);
+		g_primary_locked = 0;
 		IDirect3DDevice9_SetTexture(D3D_Device, 0, NULL);
 		IDirect3DTexture9_Release(this->hidden->SDL_primary);
 		this->hidden->SDL_primary = NULL;
@@ -1911,6 +2118,7 @@ SDL_Surface *XBOX_SetVideoMode(_THIS, SDL_Surface *current,
 	/* Lock the texture permanently - app draws directly to texture memory.
 	   Unlock only briefly during flip for GPU to render, then re-lock. */
 	ret = IDirect3DTexture9_LockRect(this->hidden->SDL_primary, 0, &d3dlr, NULL, 0);
+	g_primary_locked = (ret == D3D_OK);
 	if (ret != D3D_OK) {
 		SDL_SetError("Couldn't lock Direct3D Texture!");
 		return(NULL);
@@ -1961,8 +2169,8 @@ SDL_Surface *XBOX_SetVideoMode(_THIS, SDL_Surface *current,
 
 	D3DDevice_SetRenderState(D3D_Device, D3DRS_VIEWPORTENABLE, FALSE);
 
-	D3DDevice_SetSamplerState(D3D_Device, 0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
-	D3DDevice_SetSamplerState(D3D_Device, 0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+	D3DDevice_SetSamplerState(D3D_Device, 0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+	D3DDevice_SetSamplerState(D3D_Device, 0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
  
   
 	/* Calculate aspect-ratio-correct quad and update vertex buffer.
@@ -2062,6 +2270,7 @@ SDL_Surface* XBOX_ResizeGameTexture(int width, int height, int bpp)
 	/* Liberar textura D3D anterior */
 	if (this->hidden->SDL_primary) {
 		IDirect3DTexture9_UnlockRect(this->hidden->SDL_primary, 0);
+		g_primary_locked = 0;
 		IDirect3DDevice9_SetTexture(D3D_Device, 0, NULL);
 		IDirect3DTexture9_Release(this->hidden->SDL_primary);
 		this->hidden->SDL_primary = NULL;
@@ -2076,6 +2285,7 @@ SDL_Surface* XBOX_ResizeGameTexture(int width, int height, int bpp)
 
 	/* Lock permanente: core escribe directo a VRAM (zero-copy) */
 	ret = IDirect3DTexture9_LockRect(this->hidden->SDL_primary, 0, &d3dlr, NULL, 0);
+	g_primary_locked = (ret == D3D_OK);
 	if (ret != D3D_OK) {
 		IDirect3DTexture9_Release(this->hidden->SDL_primary);
 		this->hidden->SDL_primary = NULL;
@@ -2096,6 +2306,7 @@ SDL_Surface* XBOX_ResizeGameTexture(int width, int height, int bpp)
 		width, height, pitch_bpp, Rmask, Gmask, Bmask, 0);
 	if (!this->screen) {
 		IDirect3DTexture9_UnlockRect(this->hidden->SDL_primary, 0);
+		g_primary_locked = 0;
 		IDirect3DTexture9_Release(this->hidden->SDL_primary);
 		this->hidden->SDL_primary = NULL;
 		return NULL;
@@ -2244,7 +2455,6 @@ static void XBOX_SetupQuadState(void)
 
 static int XBOX_RenderSurface(_THIS, SDL_Surface *surface)
 {
-	D3DLOCKED_RECT d3dlr;
 	int hlslWasActive;
 
 	/* [XBOX360] Serializar todo el bloque de rendering+Present con un
@@ -2258,18 +2468,124 @@ static int XBOX_RenderSurface(_THIS, SDL_Surface *surface)
 	 * el core en una textura de la GPU y nuestra SDL_primary no participa.
 	 * Bloquearla y desbloquearla aqui seria trabajo tirado, y ademas dejaria
 	 * `surface->pixels` cambiando de sitio sin que nadie escriba ahi. */
-	if (!g_extGameTex)
-		IDirect3DTexture9_UnlockRect(this->hidden->SDL_primary, 0);
+	XBOX_UnlockGameTexture(this);
 
 	/* Nuestro pipeline, no el que haya dejado el core.  ANTES del Clear, para
 	 * que el scissor apagado le deje borrar el back buffer entero. */
 	XBOX_SetupQuadState();
 
 	/* Clear for letterbox/pillarbox bars, then render game quad */
-	IDirect3DDevice9_Clear(D3D_Device, 0, NULL, D3DCLEAR_TARGET, 0x00000000, 1.0f, 0L);
-	if (g_extGameTex)
-		IDirect3DDevice9_SetTexture(D3D_Device, 0, (D3DBaseTexture *)g_extGameTex);
-	XBOX_DrawMainQuad();
+	{
+		LPDIRECT3DTEXTURE9 srcTex = g_extGameTex ? g_extGameTex : this->hidden->SDL_primary;
+		int isExactIntWidth = (g_texture_width == (int)D3D_PP.BackBufferWidth ||
+		                       (g_texture_width * 2) == (int)D3D_PP.BackBufferWidth);
+		int isSuperUp   = (g_crt_super_res_w > (int)D3D_PP.BackBufferWidth);
+		int isLowRes240 = (g_crt_super_res_w > 0 && g_crt_super_res_w < (int)D3D_PP.BackBufferWidth);
+		int useSuperRes = (D3D_PP.BackBufferHeight <= 256 &&
+		                   ((isSuperUp && g_crtSuperResDownPS != NULL) || isLowRes240) &&
+		                   srcTex != NULL &&
+		                   g_texture_width > 0 && g_texture_height > 0 &&
+		                   !(isSuperUp && g_extGameTex != NULL && isExactIntWidth));
+		if (useSuperRes && XBOX_EnsureSuperResResources(g_crt_super_res_w, (int)D3D_PP.BackBufferHeight)) {
+			IDirect3DSurface9 *pBackBuf = NULL;
+			VERTEX srVerts[4];
+			void *pLocked = NULL;
+			float srW = (float)g_superResW;
+			float srH = (float)g_superResH;
+			float drawH = (g_texture_height <= g_superResH) ? (float)g_texture_height : srH;
+			float y0 = (float)floor((srH - drawH) * 0.5f);
+			float y1 = y0 + drawH;
+			float dims[4];
+			D3DVIEWPORT9 vp;
+
+			/* Pass 1: Core texture -> Intermediate RT (256/320/1280/1920/2560 x 240) with Point (Nearest) */
+			IDirect3DDevice9_GetRenderTarget(D3D_Device, 0, &pBackBuf);
+			IDirect3DDevice9_SetRenderTarget(D3D_Device, 0, g_superResRT);
+			vp.X = 0; vp.Y = 0; vp.Width = (DWORD)g_superResW; vp.Height = (DWORD)g_superResH;
+			vp.MinZ = 0.0f; vp.MaxZ = 1.0f;
+			IDirect3DDevice9_SetViewport(D3D_Device, &vp);
+			IDirect3DDevice9_SetRenderState(D3D_Device, D3DRS_SCISSORTESTENABLE, FALSE);
+			IDirect3DDevice9_Clear(D3D_Device, 0, NULL, D3DCLEAR_TARGET, 0x00000000, 1.0f, 0L);
+
+			srVerts[0].x = 0.0f; srVerts[0].y = y0; srVerts[0].z = 0.0f; srVerts[0].rhw = 1.0f; srVerts[0].tx = 0.0f; srVerts[0].ty = 0.0f;
+			srVerts[1].x = srW;  srVerts[1].y = y0; srVerts[1].z = 0.0f; srVerts[1].rhw = 1.0f; srVerts[1].tx = 1.0f; srVerts[1].ty = 0.0f;
+			srVerts[2].x = 0.0f; srVerts[2].y = y1; srVerts[2].z = 0.0f; srVerts[2].rhw = 1.0f; srVerts[2].tx = 0.0f; srVerts[2].ty = 1.0f;
+			srVerts[3].x = srW;  srVerts[3].y = y1; srVerts[3].z = 0.0f; srVerts[3].rhw = 1.0f; srVerts[3].tx = 1.0f; srVerts[3].ty = 1.0f;
+			IDirect3DDevice9_SetPixelShader(D3D_Device, g_fallbackPS);
+			IDirect3DDevice9_SetTexture(D3D_Device, 0, (D3DBaseTexture *)srcTex);
+			D3DDevice_SetSamplerState(D3D_Device, 0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+			D3DDevice_SetSamplerState(D3D_Device, 0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+			IDirect3DDevice9_DrawPrimitiveUP(D3D_Device, D3DPT_TRIANGLESTRIP, 2, srVerts, sizeof(VERTEX));
+
+			IDirect3DDevice9_Resolve(D3D_Device, D3DRESOLVE_RENDERTARGET0, NULL,
+			                         (D3DBaseTexture *)g_superResTex, NULL, 0, 0, NULL, 0.0f, 0, NULL);
+
+			/* Pass 2: Intermediate Texture -> Physical 640x240 Backbuffer */
+			IDirect3DDevice9_SetRenderTarget(D3D_Device, 0, pBackBuf);
+			if (pBackBuf) IDirect3DSurface9_Release(pBackBuf);
+			vp.X = 0; vp.Y = 0; vp.Width = D3D_PP.BackBufferWidth; vp.Height = D3D_PP.BackBufferHeight;
+			IDirect3DDevice9_SetViewport(D3D_Device, &vp);
+			IDirect3DDevice9_Clear(D3D_Device, 0, NULL, D3DCLEAR_TARGET, 0x00000000, 1.0f, 0L);
+
+			IDirect3DDevice9_SetTexture(D3D_Device, 0, (D3DBaseTexture *)g_superResTex);
+			if (isSuperUp) {
+				/* Downscale 1280/1920/2560 -> 640 with Horizontal Box Filter + Strict Point-Y */
+				dims[0] = srW;
+				dims[1] = srH;
+				dims[2] = srW / (float)D3D_PP.BackBufferWidth;
+				dims[3] = 1.0f / srW;
+				IDirect3DDevice9_SetPixelShader(D3D_Device, g_crtSuperResDownPS);
+				IDirect3DDevice9_SetPixelShaderConstantF(D3D_Device, 1, dims, 1);
+				D3DDevice_SetSamplerState(D3D_Device, 0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+				D3DDevice_SetSamplerState(D3D_Device, 0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+			} else if (((int)D3D_PP.BackBufferWidth % g_superResW) == 0 || g_crtSharpXPointYPS == NULL) {
+				/* Exact integer horizontal scale (e.g. 320 -> 640 = 2x): strict Point sampling */
+				IDirect3DDevice9_SetPixelShader(D3D_Device, g_fallbackPS);
+				D3DDevice_SetSamplerState(D3D_Device, 0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+				D3DDevice_SetSamplerState(D3D_Device, 0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+			} else {
+				/* Non-integer horizontal scale (e.g. 256 -> 640 = 2.5x): Sharp-X + Strict Point-Y */
+				dims[0] = srW;
+				dims[1] = srH;
+				dims[2] = (float)D3D_PP.BackBufferWidth / srW;
+				dims[3] = 0.0f;
+				IDirect3DDevice9_SetPixelShader(D3D_Device, g_crtSharpXPointYPS);
+				IDirect3DDevice9_SetPixelShaderConstantF(D3D_Device, 1, dims, 1);
+				D3DDevice_SetSamplerState(D3D_Device, 0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+				D3DDevice_SetSamplerState(D3D_Device, 0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+			}
+
+			/* Fullscreen quad over 640x240 backbuffer (super-res texture already holds centered 1:1 vertical lines) */
+			srVerts[0].x = 0.0f;                          srVerts[0].y = 0.0f; srVerts[0].tx = 0.0f; srVerts[0].ty = 0.0f;
+			srVerts[1].x = (float)D3D_PP.BackBufferWidth; srVerts[1].y = 0.0f; srVerts[1].tx = 1.0f; srVerts[1].ty = 0.0f;
+			srVerts[2].x = 0.0f;                          srVerts[2].y = srH;  srVerts[2].tx = 0.0f; srVerts[2].ty = 1.0f;
+			srVerts[3].x = (float)D3D_PP.BackBufferWidth; srVerts[3].y = srH;  srVerts[3].tx = 1.0f; srVerts[3].ty = 1.0f;
+			IDirect3DDevice9_DrawPrimitiveUP(D3D_Device, D3DPT_TRIANGLESTRIP, 2, srVerts, sizeof(VERTEX));
+
+			/* Restore main stream source & shader for overlay/subsequent calls */
+			IDirect3DDevice9_SetStreamSource(D3D_Device, 0, vertexBuffer, 0, sizeof(VERTEX));
+			IDirect3DDevice9_SetPixelShader(D3D_Device, g_activePS ? g_activePS : g_fallbackPS);
+		} else {
+			IDirect3DDevice9_Clear(D3D_Device, 0, NULL, D3DCLEAR_TARGET, 0x00000000, 1.0f, 0L);
+			if (g_extGameTex)
+				IDirect3DDevice9_SetTexture(D3D_Device, 0, (D3DBaseTexture *)g_extGameTex);
+			if (D3D_PP.BackBufferHeight <= 256 && g_crtSharpXPointYPS != NULL &&
+			    g_texture_width > 0 && g_texture_height > 0 &&
+			    g_texture_width != (int)D3D_PP.BackBufferWidth &&
+			    (g_texture_width * 2) != (int)D3D_PP.BackBufferWidth) {
+				float dims[4];
+				dims[0] = (float)g_texture_width;
+				dims[1] = (float)g_texture_height;
+				dims[2] = (float)D3D_PP.BackBufferWidth / (float)g_texture_width;
+				dims[3] = 0.0f;
+				IDirect3DDevice9_SetPixelShader(D3D_Device, g_crtSharpXPointYPS);
+				IDirect3DDevice9_SetPixelShaderConstantF(D3D_Device, 1, dims, 1);
+				D3DDevice_SetSamplerState(D3D_Device, 0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+				D3DDevice_SetSamplerState(D3D_Device, 0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+			}
+			XBOX_DrawMainQuad();
+		}
+	}
 
 	/* Draw HLSL background after game quad (as menu background) */
 	if (g_hlslBkg_active) HLSLBackground_draw(D3D_Device);
@@ -2286,16 +2602,10 @@ static int XBOX_RenderSurface(_THIS, SDL_Surface *surface)
 	XBOX_DrawOverlay(g_extGameTex ? g_extGameTex : this->hidden->SDL_primary,
 	                 hlslWasActive);
 
+	/* Fence ANTES del Present y re-bloqueo despues: ver XBOX_EndFrameFence. */
+	XBOX_EndFrameFence();
 	IDirect3DDevice9_Present(D3D_Device, NULL, NULL, NULL, NULL);
-
-	/* Re-lock so the app can keep drawing directly to texture memory */
-	if (!g_extGameTex)
-	{
-		IDirect3DTexture9_LockRect(this->hidden->SDL_primary, 0, &d3dlr, NULL, 0);
-
-		surface->pixels = d3dlr.pBits;
-		surface->pitch = d3dlr.Pitch;
-	}
+	XBOX_RelockAfterPresent(this, surface);
 
 	if (g_xboxFlipCSInit) LeaveCriticalSection(&g_xboxFlipCS);
 
@@ -2335,6 +2645,7 @@ static int XBOX_LockHWSurface(_THIS, SDL_Surface *surface)
 		return (-1);
 
 	ret = IDirect3DTexture9_LockRect(this->hidden->SDL_primary, 0, &d3dlr, NULL, 0);
+	g_primary_locked = (ret == D3D_OK);
 
 	surface->pitch = d3dlr.Pitch;
 	surface->pixels = d3dlr.pBits;
@@ -2348,13 +2659,13 @@ static int XBOX_LockHWSurface(_THIS, SDL_Surface *surface)
 static void XBOX_UnlockHWSurface(_THIS, SDL_Surface *surface)
 {
 	IDirect3DTexture9_UnlockRect(this->hidden->SDL_primary,0);
+	g_primary_locked = 0;
 
 	return;
 }
 
 static void XBOX_UpdateRects(_THIS, int numrects, SDL_Rect *rects)
 {
-	D3DLOCKED_RECT d3dlr;
 
 	if (!this->hidden->SDL_primary || !have_vertexbuffer)
 		return;
@@ -2365,8 +2676,7 @@ static void XBOX_UpdateRects(_THIS, int numrects, SDL_Rect *rects)
 
 	/* Unlock so the GPU can read the texture for rendering.
 	 * Con textura externa no participa la nuestra; ver XBOX_RenderSurface. */
-	if (!g_extGameTex)
-		IDirect3DTexture9_UnlockRect(this->hidden->SDL_primary, 0);
+	XBOX_UnlockGameTexture(this);
 
 	XBOX_SetupQuadState();   /* ver XBOX_RenderSurface */
 
@@ -2378,16 +2688,10 @@ static void XBOX_UpdateRects(_THIS, int numrects, SDL_Rect *rects)
 	/* g_hlslBkg_active es estado retenido; ya no se resetea por-frame. */
 	XBOX_DrawOverlay(g_extGameTex ? g_extGameTex : this->hidden->SDL_primary, 0);
 
+	/* Fence ANTES del Present y re-bloqueo despues: ver XBOX_EndFrameFence. */
+	XBOX_EndFrameFence();
 	IDirect3DDevice9_Present(D3D_Device, NULL, NULL, NULL, NULL);
-
-	/* Re-lock so the app can keep drawing directly to texture memory */
-	if (!g_extGameTex)
-	{
-		IDirect3DTexture9_LockRect(this->hidden->SDL_primary, 0, &d3dlr, NULL, 0);
-
-		this->screen->pixels = d3dlr.pBits;
-		this->screen->pitch = d3dlr.Pitch;
-	}
+	XBOX_RelockAfterPresent(this, this->screen);
 
 	if (g_xboxFlipCSInit) LeaveCriticalSection(&g_xboxFlipCS);
 }
@@ -2414,6 +2718,7 @@ void XBOX_VideoQuit(_THIS)
 	 if (this->hidden->SDL_primary)
 	 {
 		 IDirect3DTexture9_UnlockRect(this->hidden->SDL_primary, 0);
+		 g_primary_locked = 0;
 		 IDirect3DDevice9_SetTexture(D3D_Device, 0, NULL);
 		 IDirect3DDevice9_SetStreamSource(D3D_Device, 0, NULL, 0, 0);
 		 IDirect3DTexture9_Release(this->hidden->SDL_primary);
@@ -2556,6 +2861,7 @@ int XBOX_DisplayYUVOverlay(_THIS, SDL_Overlay *overlay, SDL_Rect *src, SDL_Rect 
 
 
     IDirect3DTexture9_UnlockRect(this->hidden->SDL_primary, 0);
+	g_primary_locked = 0;
 	IDirect3DTexture9_UnlockRect(surface, 0);
 
 	XBOX_DrawMainQuad();
@@ -2839,6 +3145,7 @@ void initShaders() {
         return;
     }
     CreateShader(g_strShaderCrtSharpXPointYSource, &g_crtSharpXPointYPS, PS_FLAGS_FULL_PRECISION);
+    CreateShader(g_strShaderCrtSuperResDownsampleSource, &g_crtSuperResDownPS, PS_FLAGS_FULL_PRECISION);
     g_activePS = g_fallbackPS;
     g_pPixelShader = g_fallbackPS;
 
@@ -2910,9 +3217,14 @@ void destroyShaders() {
         g_lutTex = NULL;
     }
 
+    XBOX_ReleaseSuperResResources();
     if (g_crtSharpXPointYPS != NULL) {
         IDirect3DPixelShader9_Release(g_crtSharpXPointYPS);
         g_crtSharpXPointYPS = NULL;
+    }
+    if (g_crtSuperResDownPS != NULL) {
+        IDirect3DPixelShader9_Release(g_crtSuperResDownPS);
+        g_crtSuperResDownPS = NULL;
     }
     if (g_fallbackPS != NULL) {
         IDirect3DPixelShader9_Release(g_fallbackPS);
@@ -2924,21 +3236,6 @@ void destroyShaders() {
     SalviaShader_Release();
 }
 
-static int XBOX_ShouldUseCrtSharpXPointY(void)
-{
-    int bbw = (int)D3D_PP.BackBufferWidth;
-    int bbh = (int)D3D_PP.BackBufferHeight;
-    int dw  = (int)(g_display_w + 0.5f);
-    if (!g_crtSharpXPointYPS) return 0;
-    if (bbh <= 0 || bbh > 256 || bbw <= (int)(bbh * 1.5f)) return 0;
-    if ((g_screen_rotation & 1) != 0) return 0;
-    if (g_texture_width <= 0 || g_texture_height <= 0 || dw <= 0) return 0;
-    /* Activar solo en escalado horizontal fraccional (ej. 256->640, 512->640).
-       Si es multiplo entero (ej. 320->640, 256->1280), POINT puro ya es perfecto. */
-    if ((dw % g_texture_width) == 0) return 0;
-    return 1;
-}
-
 /* Aplica el estado descrito por el preset. Sustituye al switch de 13 casos
    que habia aqui: filtro, wrap y LUT vienen ahora del .hlslp. */
 void XBOX_SelectEffect(int effectID) {
@@ -2946,30 +3243,14 @@ void XBOX_SelectEffect(int effectID) {
     IDirect3DPixelShader9* ps;
     float dims[4];
     int i;
-    int useCrtSharpX;
 
     if (!D3D_Device || g_fallbackPS == NULL) return;
 
-    /* Actualizar geometria del quad primero para que g_display_w / g_display_scale_x
-       esten sincronizados antes de decidir el shader CRT y subir c1. */
-    if (!g_display_fullscreen && g_texture_width > 0)
-        XBOX_UpdateVertexBuffer(g_texture_width, g_texture_height, g_display_aspect_ratio);
-
-    dims[0] = (g_texture_width > 0) ? (float)g_texture_width : 1.0f;
-    dims[1] = (g_texture_height > 0) ? (float)g_texture_height : 1.0f;
-    dims[2] = (g_display_scale_x > 1.0f) ? g_display_scale_x : 1.0f;
-    dims[3] = 0.0f;
-
     if (g_presetCount <= 0 || g_presets == NULL) {
-        /* Sin tabla: passthrough puro o Sharp-X/Point-Y en CRT 240p. */
-        useCrtSharpX = XBOX_ShouldUseCrtSharpXPointY();
-        g_activePS = useCrtSharpX ? g_crtSharpXPointYPS : g_fallbackPS;
-        g_pPixelShader = g_activePS;
+        /* Sin tabla: passthrough puro. Nunca se deja el pipeline sin shader. */
+        g_activePS = g_fallbackPS;
         IDirect3DDevice9_SetPixelShader(D3D_Device, g_activePS);
-        IDirect3DDevice9_SetPixelShaderConstantF(D3D_Device, 1, dims, 1);
-        XBOX_SetSampler0Filter(useCrtSharpX ? D3DTEXF_LINEAR : D3DTEXF_POINT);
-        IDirect3DDevice9_SetSamplerState(D3D_Device, 0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
-        IDirect3DDevice9_SetSamplerState(D3D_Device, 0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+        XBOX_SetSampler0Filter(D3DTEXF_POINT);
         return;
     }
 
@@ -2978,27 +3259,30 @@ void XBOX_SelectEffect(int effectID) {
     g_current_effect = effectID;
 
     pass = &g_presets[effectID].passes[g_presets[effectID].activePass];
-    useCrtSharpX = (effectID == 0 && (g_compiled == NULL || g_compiled[effectID] == NULL) &&
-                    XBOX_ShouldUseCrtSharpXPointY());
 
     /* 1. Shader. Cachear el puntero (en vez de indexar por g_current_effect
           desde el bucle de dibujado) es lo que garantiza que jamas se engancha
           un NULL: un preset que no compilo cae aqui al passthrough. */
-    if (useCrtSharpX) {
-        ps = g_crtSharpXPointYPS;
-    } else {
-        ps = (g_compiled != NULL && g_compiled[effectID] != NULL)
-           ? g_compiled[effectID] : g_fallbackPS;
-    }
+    ps = (g_compiled != NULL && g_compiled[effectID] != NULL)
+       ? g_compiled[effectID] : g_fallbackPS;
     g_activePS = ps;
     g_pPixelShader = ps;
     IDirect3DDevice9_SetPixelShader(D3D_Device, ps);
 
-    /* 2. c1 = (texW, texH, displayScaleX, 0), SIEMPRE. */
+    /* 2. c1 = textureDims, SIEMPRE. Antes habia efectos que no lo escribian;
+          ponerlo de mas cuesta 4 floats por CAMBIO de efecto (no por frame) y
+          elimina toda la casuistica. */
+    dims[0] = (float)g_texture_width;
+    dims[1] = (float)g_texture_height;
+    dims[2] = 0.0f;
+    dims[3] = 0.0f;
     IDirect3DDevice9_SetPixelShaderConstantF(D3D_Device, 1, dims, 1);
 
-    /* 3. Sampler s0: filtro y wrap SIEMPRE. */
-    XBOX_SetSampler0Filter((useCrtSharpX || pass->filter == SALVIA_FILTER_LINEAR)
+    /* 3. Sampler s0: filtro y wrap SIEMPRE. Escribir el wrap sin condiciones
+          arregla de paso una fuga de estado real que habia antes: los efectos
+          que ponian CLAMP explicito (Lottes, Easymode, HQx) nunca lo devolvian
+          a su valor, asi que el siguiente efecto heredaba su direccionamiento. */
+    XBOX_SetSampler0Filter(pass->filter == SALVIA_FILTER_LINEAR
                            ? D3DTEXF_LINEAR : D3DTEXF_POINT);
     IDirect3DDevice9_SetSamplerState(D3D_Device, 0, D3DSAMP_ADDRESSU, XBOX_MapWrap(pass->wrap));
     IDirect3DDevice9_SetSamplerState(D3D_Device, 0, D3DSAMP_ADDRESSV, XBOX_MapWrap(pass->wrap));
@@ -3022,4 +3306,8 @@ void XBOX_SelectEffect(int effectID) {
         IDirect3DDevice9_SetSamplerState(D3D_Device, s, D3DSAMP_ADDRESSV,
                                          XBOX_MapWrap(pass->luts[i].wrap));
     }
+
+    /* Update quad size: in pixel-perfect mode the scale factor may change with the effect */
+    if (!g_display_fullscreen && g_texture_width > 0)
+        XBOX_UpdateVertexBuffer(g_texture_width, g_texture_height, g_display_aspect_ratio);
 }

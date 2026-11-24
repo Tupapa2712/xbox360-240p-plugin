@@ -56,4 +56,39 @@ const static char* g_strShaderCrtSharpXPointYSource =
     "     return tex2D( detail, float2(u, v) );                                    \n"
     " }                                                                            \n";
 
+/* CRT 240p Super-Resolution Horizontal Box Downsample + Strict Point-Y:
+ * Pass 2 de la cadena SwitchRes (1280x240, 1920x240, 2560x240 -> 640x240).
+ * Promedia exactamente N subpixeles horizontales (N = superW / 640 = 2, 3 o 4)
+ * en el centro exacto de la scanline vertical (cero sangrado entre scanlines).
+ * c1 = (superW, 240.0, superW / 640.0, 1.0 / superW). */
+const static char* g_strShaderCrtSuperResDownsampleSource =
+    " float4 textureDims : register(c1);                                                    \n"
+    " struct PS_IN                                                                          \n"
+    " {                                                                                     \n"
+    "     float2 TexCoord : TEXCOORD0;                                                      \n"
+    " };                                                                                    \n"
+    " sampler2D detail : register(s0);                                                      \n"
+    " float4 main( PS_IN In ) : COLOR0                                                      \n"
+    " {                                                                                     \n"
+    "     float v  = (floor(In.TexCoord.y * textureDims.y) + 0.5) / textureDims.y;          \n"
+    "     float dx = textureDims.w;                                                         \n"
+    "     float u  = In.TexCoord.x;                                                         \n"
+    "     if (textureDims.z > 3.5) {                                                        \n"
+    "         float4 c0 = tex2D( detail, float2(u - 1.5 * dx, v) );                         \n"
+    "         float4 c1 = tex2D( detail, float2(u - 0.5 * dx, v) );                         \n"
+    "         float4 c2 = tex2D( detail, float2(u + 0.5 * dx, v) );                         \n"
+    "         float4 c3 = tex2D( detail, float2(u + 1.5 * dx, v) );                         \n"
+    "         return (c0 + c1 + c2 + c3) * 0.25;                                            \n"
+    "     } else if (textureDims.z > 2.5) {                                                 \n"
+    "         float4 c0 = tex2D( detail, float2(u - dx, v) );                               \n"
+    "         float4 c1 = tex2D( detail, float2(u,      v) );                               \n"
+    "         float4 c2 = tex2D( detail, float2(u + dx, v) );                               \n"
+    "         return (c0 + c1 + c2) * 0.3333333;                                            \n"
+    "     } else {                                                                          \n"
+    "         float4 c0 = tex2D( detail, float2(u - 0.5 * dx, v) );                         \n"
+    "         float4 c1 = tex2D( detail, float2(u + 0.5 * dx, v) );                         \n"
+    "         return (c0 + c1) * 0.5;                                                       \n"
+    "     }                                                                                 \n"
+    " }                                                                                     \n";
+
 #endif

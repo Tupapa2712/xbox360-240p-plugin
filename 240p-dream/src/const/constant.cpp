@@ -9,88 +9,26 @@ svColor Constant::colors[clTotalColors] = {
 	{{0, 0, 0} , 0},			//clBackground
 	{{1, 1, 1} , 0},			//clBlack (1,1,1 en vez de 0,0,0 para que alpha-fixup shader lo distinga de píxel vacío)
 	{{0xFF, 0xFF, 0xFF} , 0},	//clWhite
-	{{120, 214, 255}, 255},		//clYellow (Aero sky highlight)
-	{{232, 62, 68}, 0},			//clRed
-	{{59, 168, 245}, 255},		//clBlue (Aero cerulean)
-	{{26, 108, 194}, 0},		//clBkgMenuDarker (Windows 7 taskbar navy)
-	{{122, 208, 255}, 0},		//clBkgMenu (Aero frosted luminous glass)
-	{{208, 242, 255}, 255},		//clBkgMenuLighter (Aero glass specular rim)
-	{{14, 34, 64}, 0xFF},		//clBG (Aero translucent cobalt glass panel)
-	{{228, 244, 255}, 255},		//clBorder (Crisp Aero ice-white border)
-	{{94, 174, 236}, 255},		//clMenuBars (Glass divider bars)
-	{{162, 236, 255}, 255},		//clTxtNavBar (Aero aqua breadcrumb)
-	{{176, 198, 224}, 255},		//clDarkGray (Soft Aero pearl-slate)
-	{{164, 236, 255}, 255},		//clSwitchEnabled
-	{{72, 102, 138}, 255},		//clSwitchDisabled
-	{{36, 78, 128}, 255},		//clPaleBlue
-	{{24, 98, 178}, 255},		//clAskTitle
-	{{16, 40, 76}, 255},		//clAskBg
-	{{122, 208, 255}, 255},		//clAskLine
-	{{242, 249, 255}, 255},		//clAskText
-	{{126, 244, 255}, 255}		//clHighligtOption
-};
-
-int Constant::themeVersion = 1;
-
-void Constant::applyTheme(int themeIdx, SDL_Surface* fmtRef){
-	struct ThemeRgb { Uint8 r, g, b; };
-	// Index mapping matches colors[0..21]: 0..2 fixed (bg, black, white), 3..21 themed
-	static const ThemeRgb kThemes[4][clTotalColors] = {
-		// 0: Frutiger Aero (Windows 7 Blue & White Crystal Glass)
-		{
-			{0,0,0}, {1,1,1}, {255,255,255},
-			{120,214,255}, {232,62,68}, {59,168,245},
-			{26,108,194}, {122,208,255}, {208,242,255},
-			{14,34,64}, {228,244,255}, {94,174,236},
-			{162,236,255}, {176,198,224}, {164,236,255},
-			{72,102,138}, {36,78,128}, {24,98,178},
-			{16,40,76}, {122,208,255}, {242,249,255}, {126,244,255}
-		},
-		// 1: Crystal Ice (Aero White & Silver Azure)
-		{
-			{0,0,0}, {1,1,1}, {255,255,255},
-			{180,234,255}, {236,76,82}, {92,188,248},
-			{52,126,192}, {198,236,255}, {244,251,255},
-			{24,48,78}, {255,255,255}, {154,206,244},
-			{208,246,255}, {196,214,232}, {210,248,255},
-			{96,120,148}, {58,92,132}, {44,116,184},
-			{28,52,82}, {182,226,252}, {250,253,255}, {176,250,255}
-		},
-		// 2: Ocean 240p Midnight (Deep Cobalt & Electric Cyan)
-		{
-			{0,0,0}, {1,1,1}, {255,255,255},
-			{0,224,255}, {255,68,68}, {0,162,255},
-			{10,64,124}, {64,192,255}, {150,228,255},
-			{8,18,36}, {180,230,255}, {44,120,192},
-			{0,240,255}, {148,172,198}, {0,224,255},
-			{50,74,104}, {18,46,84}, {12,72,136},
-			{10,24,48}, {64,192,255}, {232,244,255}, {0,255,220}
-		},
-		// 3: Retro Classic (Salvia Gold & Teal)
-		{
-			{0,0,0}, {1,1,1}, {255,255,255},
-			{241,222,19}, {255,0,0}, {76,194,255},
-			{183,161,56}, {247,221,114}, {237,221,150},
-			{40,40,40}, {200,200,200}, {128,128,128},
-			{138,207,178}, {160,160,160}, {200,200,200},
-			{77,77,77}, {57,72,93}, {59,59,59},
-			{69,69,69}, {91,91,91}, {190,190,190}, {0,255,197}
-		}
-	};
-
-	const int idx = (themeIdx < 0 || themeIdx > 3) ? 0 : themeIdx;
-	for (int i = 0; i < clTotalColors; i++){
-		colors[i].sdlColor.r = kThemes[idx][i].r;
-		colors[i].sdlColor.g = kThemes[idx][i].g;
-		colors[i].sdlColor.b = kThemes[idx][i].b;
-		colors[i].sdlColor.unused = (i < 3 && i != 0) ? 0 : 255;
-		if (fmtRef != NULL && fmtRef->format != NULL){
-			colors[i].color = SDL_MapRGBA(fmtRef->format, colors[i].sdlColor.r, colors[i].sdlColor.g, colors[i].sdlColor.b, 0xFF);
-		}
-		colors[i].colorRaw = (colors[i].sdlColor.r << 24) | (colors[i].sdlColor.g << 16) | (colors[i].sdlColor.b << 8) | 0xFF;
-	}
-	themeVersion++;
-} 
+	{{241, 222, 19}, 255},		//clYellow
+	{{255, 0, 0}, 0},			//clRed
+	{{76, 194, 255}, 255},		//clBlue
+	{{183, 161, 56}, 0},		//clBkgMenuDarker
+	{{247, 221, 114}, 0},		//clBkgMenu
+	{{237, 221, 150}, 255},		//clBkgMenuLighter
+	{{40, 40, 40}, 0xFF},		//clBG
+	{{200, 200, 200}, 255},		//clBorder
+	{{128, 128, 128}, 255},		//clMenuBars
+	{{138, 207, 178}, 255},		//clTxtNavBar
+	{{160, 160, 160}, 255},		//clDarkGray
+	{{200, 200, 200}, 255},		//clSwitchEnabled
+	{{77, 77, 77}, 255},		//clSwitchEnabled
+	{{57, 72, 93}, 255},		//clPaleBlue
+	{{59,59,59}	 , 255},		//clAskTitle
+	{{69,69,69}	 , 255},		//clAskBg 	
+	{{91,91,91}	 , 255},		//clAskLine 
+	{{190,190,190}, 255},		//clAskText 
+	{{0,255,197}, 255}		    //clHighligtOption
+}; 
 
 const int LIGHTGUN_SIZES[LIGHTGUN_SIZES_COUNT] = {100, 80, 60, 40};
 const int LIGHTGUN_THICKNESS[LIGHTGUN_THICKNESS_COUNT] = {1, 3, 5, 7};
@@ -120,6 +58,9 @@ const std::string SCRAPPING_DAT = "images.bin";
 const std::string TITLE_EMU_FILENAME = "title.png";
 const std::string PASS_MASK = "****";
 const std::string DEFAULT_LANG = "en";
+
+const std::string Constant::MAME_SYS_ID = "75";
+const std::string Constant::WHITESPACE = " \n\r\t";
 
 // Caracteres que queremos sustituir por un espacio (para no pegar palabras)
 const char SYMBOLS_TO_SPACE[] = ":-._/\\|,;"; 
@@ -153,6 +94,9 @@ const char *ICONS_PATH[] = {"menu_log.png",		// page_white_text
 	"reload.png",								// ico_reload
 	"input_TURBO.png",							// ico_turbo
 	"menu_download.png",						// ico_download
+	"menu_updater.png",							// ico_updater
+	"menu_check.png",							// ico_menu_check
+	"menu_error.png",							// ico_menu_error
 	"input_DPAD-U.png",							// ico_input_dpad_u
 	"input_DPAD-D.png",							// ico_input_dpad_d
 	"input_DPAD-L.png",							// ico_input_dpad_l
@@ -191,6 +135,7 @@ const char *ICONS_CARTS_PATH[] = {"Nintendo - Game Boy Advance-content.png",  //
 	"SNK - Neo Geo Pocket Color-content.png",								  // cart_neogeo_pocket
 	"Sinclair - ZX Spectrum-content.png",									  // cart_zx
 	"Microsoft - MSX-content.png",											  // cart_msx
+	"Microsoft - MSX2-content.png",											  // cart_msx2
 	"DOS-content.png",														  // cart_dos
 	"DOOM-content.png",														  // cart_doom
 	"NEC - PC Engine SuperGrafx-content.png",								  // cart_supergrafx
@@ -201,12 +146,14 @@ const char *ICONS_CARTS_PATH[] = {"Nintendo - Game Boy Advance-content.png",  //
 	"Nintendo - Virtual Boy-content.png",									  // cart_virtualboy
 	"Atari - Lynx-content.png",												  // cart_atarilynx
 	"Atari - 800-content.png",												  // cart_atari800
+	"Atari - 2600-content.png",												  // cart_atari2600
 	"Atari - 5200-content.png",												  // cart_atari5200
 	"Commodore - 64-content.png",											  // cart_c64
 	"Sharp - X68000-content.png",											  // cart_x68k
 	"Commodore - Amiga-content.png",										  // cart_amiga
 	"Amiga - CD32-content.png",												  // cart_cd32	
 	"Nintendo - Nintendo 64-content.png",									  // cart_n64
+	"ScummVM-content.png"													  // cart_scummvm
 };
 
 // Nombres de sistema de libretro-database (ficheros rdb/ y carpetas cht/), indexado por
@@ -229,6 +176,7 @@ const char *RDB_SYSTEM_NAMES[] = {
 	"SNK - Neo Geo Pocket Color",                      // cart_neogeo_pocket
 	"Sinclair - ZX Spectrum",                          // cart_zx
 	"Microsoft - MSX",                                 // cart_msx
+	"Microsoft - MSX2",                                // cart_msx2
 	"",                                                // cart_dos
 	"",                                                // cart_doom
 	"NEC - PC Engine SuperGrafx",                      // cart_supergrafx
@@ -239,12 +187,14 @@ const char *RDB_SYSTEM_NAMES[] = {
 	"Nintendo - Virtual Boy",                          // cart_virtualboy
 	"Atari - Lynx",									   // cart_atarilynx
 	"Atari - 8-bit Family",							   // cart_atari800
+	"Atari - 2600",									   // cart_atari2600
 	"Atari - 5200",									   // cart_atari5200
 	"",												   // cart_c64
 	"",												   // cart_x68k
 	"",				    							   // cart_amiga
 	"",												   // cart_cd32
-	"Nintendo - Nintendo 64"						   // cart_n64
+	"Nintendo - Nintendo 64",						   // cart_n64
+	""												   // cart_scummvm
 };
 
 /* El indice es eje*2 + (valor>0), y que eje es cada stick NO coincide entre

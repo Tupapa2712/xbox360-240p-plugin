@@ -33,7 +33,6 @@
 	#endif
 	extern "C" void XBOX_SetVideoFilter(int filterType);	
 	extern "C" void XBOX_SelectEffect(int effectID);	
-	extern "C" void SDL_XBOX_GetScreenResolution(int *w, int *h);
 	extern "C" int XBOX_isHidMousePluginConnected();
 #else 
 	#ifndef SALVIA_GPU_VIDEO
@@ -121,7 +120,6 @@ class GameMenu : public Engine{
 		int *current_sync;
 		bool *current_integer_scale;
 		int *current_integer_scale_type;
-		bool current_fast_forward;
 		bool romLoaded;
 		Uint32 uBkgColor;
 		int selectedFsImage;
@@ -164,8 +162,8 @@ class GameMenu : public Engine{
 			HLSLBackground_setActive((isMenu && animBG >= BG_HLSL && animBG < BG_NONE) ? (animBG - BG_HLSL + 1) : 0);
 		}
 
-		void setEmuStatus(int tmpStat);
 		void exitCoreToFrontend();
+		void setEmuStatus(int tmpStat);
 		int getEmuStatus(){return status;}
 		int getLastStatus(){return lastStatus;}
 
@@ -200,6 +198,10 @@ class GameMenu : public Engine{
 		struct retro_system_av_info getAvInfo();
 		void checkDisplayOptions();
 		void loadBgImageAndTitleEmu();
+		void drawLoadingProgressBar(SDL_Surface*& screen, float progress);
+		void loadRetroJoyIni(std::string ruta);
+		void resetRetroJoyIni();
+
     private:
 		std::vector<Message> messages;
 		th_messages messagesAchievement;
@@ -266,6 +268,7 @@ class GameMenu : public Engine{
 		void drawTitle(ListMenu &listMenu, TTF_Font *fontBig);
 		void drawStatusBar(ListMenu &listMenu);
 		void drawSelectedGameAssets(ListMenu &listMenu, GameFile *game);
+		
 		string getAssetsDir(ConfigEmu *emu);
 		std::string reduceWords(const std::string &sentence1, const std::string &sentence2);
 };

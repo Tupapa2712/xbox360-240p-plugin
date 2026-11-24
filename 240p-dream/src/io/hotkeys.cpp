@@ -1,6 +1,9 @@
 #include "hotkeys.h"
 #include <const/constant.h>
 #include <iostream>
+#ifdef _XBOX
+#include <xtl.h>
+#endif
 
 /* Los defaults se declaran por boton LOGICO (JOY_BUTTON_*) y se traducen al
  * indice que entrega SDL con sdlBtnOf() (beans/structures.h, que ya llega por
@@ -18,7 +21,6 @@ Hotkeys::Hotkeys(t_joy_state *inputs){
 		inputs->mapperHotkeys.setBtnFromSdl(p, sdlBtnOf(JOY_BUTTON_Y), HK_VIEW_MENU);
 		inputs->mapperHotkeys.setBtnFromSdl(p, sdlBtnOf(JOY_BUTTON_L), HK_SAVESTATE);
 		inputs->mapperHotkeys.setBtnFromSdl(p, sdlBtnOf(JOY_BUTTON_R), HK_LOADSTATE);
-		inputs->mapperHotkeys.setBtnFromSdl(p, sdlBtnOf(JOY_BUTTON_START), HK_EXIT_GAME);
 		inputs->mapperHotkeys.setBtnFromSdl(p, sdlBtnOf(JOY_BUTTON_R3), HK_FAST_FORWARD);
 		inputs->mapperHotkeys.setHatFromSdl(p, SDL_HAT_UP, HK_SLOT_UP);
 		inputs->mapperHotkeys.setHatFromSdl(p, SDL_HAT_DOWN, HK_SLOT_DOWN);
@@ -40,22 +42,39 @@ HOTKEYS_LIST Hotkeys::procesarHotkeys(t_joy_state *inputs) {
     const Uint32 now = SDL_GetTicks();
     static Uint32 lastHotKey = 0;
 
+    // 0. Combo directo 240p Dream: LB + RB + LT + RT sale al menu principal en 480i al primer toque
+    // (sin requerir Select y con lectura directa XInput en Xbox 360 para respuesta inmediata).
+    if (now - lastHotKey >= 300) {
+#ifdef _XBOX
+        for (DWORD p = 0; p < 4; ++p) {
+            XINPUT_STATE xs;
+            if (XInputGetState(p, &xs) == ERROR_SUCCESS) {
+                const WORD bumpers = XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER;
+                if ((xs.Gamepad.wButtons & bumpers) == bumpers &&
+                    xs.Gamepad.bLeftTrigger > 100 &&
+                    xs.Gamepad.bRightTrigger > 100) {
+                    lastHotKey = now;
+                    return HK_EXIT_GAME;
+                }
+            }
+        }
+#else
+        int sdlBtnL = sdlBtnOf(JOY_BUTTON_L);
+        int sdlBtnR = sdlBtnOf(JOY_BUTTON_R);
+        if (inputs->getSdlBtn(0, sdlBtnL) && inputs->getSdlBtn(0, sdlBtnR) &&
+            inputs->getSdlBtn(0, 10) && inputs->getSdlBtn(0, 11)) {
+            inputs->btn_state[0][sdlBtnL] = false;
+            inputs->btn_state[0][sdlBtnR] = false;
+            lastHotKey = now;
+            return HK_EXIT_GAME;
+        }
+#endif
+    }
+
 	int sdlBtnModif = inputs->mapperHotkeys.getSdlBtn(0, HK_MODIFIER);
     // 1. "Early Exit": Si no hay modificador o estamos en cooldown, salimos rapido.
     if (sdlBtnModif == -1 || !inputs->getSdlBtn(0, sdlBtnModif) || (now - lastHotKey < 300)) {
         return HK_MAX;
-    }
-
-    // 1b. Salida directa segura Back + LB + RB antes que LB/RB individuales (Save/Load state)
-    {
-        const int sdlL = sdlBtnOf(JOY_BUTTON_L);
-        const int sdlR = sdlBtnOf(JOY_BUTTON_R);
-        if (inputs->getSdlBtn(0, sdlL) && inputs->getSdlBtn(0, sdlR)) {
-            inputs->btn_state[0][sdlL] = false;
-            inputs->btn_state[0][sdlR] = false;
-            lastHotKey = now;
-            return HK_EXIT_GAME;
-        }
     }
 
     // 2. Buscamos el Hotkey

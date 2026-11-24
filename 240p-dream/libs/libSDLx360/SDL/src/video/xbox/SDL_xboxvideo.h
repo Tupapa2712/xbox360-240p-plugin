@@ -117,10 +117,14 @@ void SDL_XBOX_SetRotation(int rotation);
 void SDL_XBOX_SetVSync(int enabled);
 
 void SDL_XBOX_SetScrenResolution(int w, int h);
-void SDL_XBOX_GetScreenResolution(int *w, int *h);
+
+/* 240p Dream IPC Beacon ('S240' v3) & CRT SwitchRes Super-Resolution */
 void SDL_XBOX_SetBeaconInfo(int is_menu, int in_game);
-void SDL_XBOX_SetPluginCommand(unsigned int cmd);
+void SDL_XBOX_SetBeaconCmd(unsigned int cmd);
 void SDL_XBOX_GetPluginStatus(unsigned int *plugin_ver, unsigned int *plugin_mode);
+int  SDL_XBOX_IsT240Loaded(void);
+void SDL_XBOX_SetCrtSuperResWidth(int super_w);
+int  SDL_XBOX_GetCrtSuperResWidth(void);
 
 #endif /* _SDL_nullvideo_h */
 

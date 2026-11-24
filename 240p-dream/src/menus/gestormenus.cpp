@@ -10,17 +10,20 @@
 #include <gfx/gfx_utils.h>
 #include <gfx/SDL_gfxPrimitives.h>
 #include <io/joystick.h>
+#include <io/filelist.h>
 #include <image/icons.h>
 #include <utils/langmanager.h>
 #include <video/shaderpreset.h>
 #include <http/httputil.h>
 #include <http/achievements.h>
 #include <so/soutils.h>
-#include <so/launcher.h>
 #include <cheats/cheatmanager.h>
 #include <video/HLSLBackground.h>
 #include <http/scrapper.h>
+#include <unzip/unziptool.h>
+#include <unzip/sevenzip.h>
 
+#include <http/pugixml.hpp>
 
 SDL_Surface* GestorMenus::imgText;
 
@@ -44,6 +47,14 @@ extern std::string downloadCheatWithProgress();
 extern std::string lastCheatSourceName();
 
 const char *scrapOrigins[] = {"SCREENSCRAPER", "THEGAMESDB", "EMPTY"};
+static const std::string TXT_BIOSFOUND = "menu.updater.bios.found";
+static const std::string TXT_BIOSNOTFOUND = "menu.updater.bios.error.notfound";
+static const std::string TXT_BIOSDOWNLOADED = "menu.updater.bios.downloaded";
+static const std::string TXT_BIOSERRORCRC = "menu.updater.bios.error.crc";
+static const std::string TXT_BIOSERRORDOWNLOAD = "menu.updater.bios.error.download";
+static const std::string TXT_BIOSDOWNLOADING = "menu.updater.bios.downloading";
+static const std::string TXT_BIOSCHECKINGCRC = "menu.updater.bios.checkingcrc";
+static const std::string EXT_7ZIP = ".7z";
 
 GestorMenus::GestorMenus(int screenw, int screenh){
 	face_h_big = Fonts::getLineSkip(Fonts::FONTBIG);
@@ -82,6 +93,8 @@ GestorMenus::GestorMenus(int screenw, int screenh){
 
 	tmpTextOption = NULL;
 	menuLangsIdx = 0;
+	selecAlphaRec = NULL;
+	hBiosDownThread = NULL;
 }
 
 GestorMenus::~GestorMenus() {
@@ -94,6 +107,10 @@ GestorMenus::~GestorMenus() {
 		delete coreOptionSubmenus[i];
 	}
 	coreOptionSubmenus.clear();
+	for (std::size_t i = 0; i < preCoreProfiles.size(); ++i) {
+		delete preCoreProfiles[i];
+	}
+	preCoreProfiles.clear();
 
     for(std::size_t i = 0; i < todosLosMenus.size(); i++) {
 		if (todosLosMenus[i])
@@ -103,6 +120,10 @@ GestorMenus::~GestorMenus() {
 
 	if (tmpTextOption != NULL){
 		SDL_FreeSurface(tmpTextOption);
+	}
+
+	if (selecAlphaRec != NULL){
+		SDL_FreeSurface(selecAlphaRec);
 	}
 
 	imageSavestate.closeImage();
@@ -148,17 +169,21 @@ void GestorMenus::inicializar(CfgLoader *refConfig, Joystick *joystick) {
 	SDL_HAT_TO_XBOX[12] = SDL_HAT_TO_XBOX[4] + "-" + SDL_HAT_TO_XBOX[8]; /* LEFTDOWN  */
 
 	// 1. Crear contenedores de menus
+    m_joystickRef = joystick;
     menuRaiz = new Menu(LanguageManager::instance()->get("menu.main.options"));
     Menu* menuVideo = new Menu(LanguageManager::instance()->get("menu.main.video"), menuRaiz);
 	Menu* menuAudio = new Menu(LanguageManager::instance()->get("menu.main.audio"), menuRaiz);
 	Menu* menuEmulation = new Menu(LanguageManager::instance()->get("menu.main.emulation"), menuRaiz);
 	Menu* menuEntrada = new Menu(LanguageManager::instance()->get("menu.main.input"), menuRaiz);
 	menuCoreOptions = new Menu(LanguageManager::instance()->get("menu.main.core.options"), menuRaiz);
+	poblarPreLaunchCoreOptions(refConfig);
 	menuCheats = new Menu(LanguageManager::instance()->get("menu.main.cheats"), menuRaiz);
 	menuSavestates = new Menu(LanguageManager::instance()->get("menu.main.saves"), face_h_big, this->getW() / 2 - 2 * marginX, menuRaiz);
 	menuScrapper = new Menu(LanguageManager::instance()->get("menu.main.scrapper"), menuRaiz);
 	Menu* menuSearchGamesGuide = new Menu(LanguageManager::instance()->get("menu.guides.title"), face_h_big * 2, this->getW() - marginX, menuRaiz);
 	Menu* parentAchievements = new Menu(LanguageManager::instance()->get("menu.achievement.title"), menuRaiz);
+	Menu* menuUpdater = new Menu(LanguageManager::instance()->get("menu.updater.title"), menuRaiz);
+
 
 	//Rellenamos algunas listas necesarias
 	rellenarVideoShaderStrings();
@@ -176,6 +201,8 @@ void GestorMenus::inicializar(CfgLoader *refConfig, Joystick *joystick) {
 	poblarMenuPad(menuEntrada, refConfig, joystick);
 	//Menu del scrapper que rellena los idiomas y lenguas
 	poblarMenuScrapper(refConfig, menuScrapper);
+	//Menu que rellena las opciones del actualizador
+	poblarMenuUpdater(menuUpdater, refConfig);
 
 	//Poblar menu ask
 	std::vector<std::string> askOptions;
@@ -203,11 +230,11 @@ void GestorMenus::inicializar(CfgLoader *refConfig, Joystick *joystick) {
 	menuRaiz->opciones.push_back(new OpcionSubMenu(LanguageManager::instance()->get("menu.main.scrapper"), menuScrapper, ico_scrapper));
 	menuRaiz->opciones.push_back(new OpcionSubMenu(LanguageManager::instance()->get("menu.achievement.title"), parentAchievements, ico_achievements));
 	menuRaiz->opciones.push_back(submenuSearchGuides);
-	//Acciones del menu principal para guardar las opciones, volver al juego, salir y apagar consola
+	menuRaiz->opciones.push_back(new OpcionSubMenu(LanguageManager::instance()->get("menu.updater.title"), menuUpdater, ico_updater));
+	//Acciones del menu principal para guardar las opciones, volver al juego y salir de Salvia
 	menuRaiz->opciones.push_back(new OpcionExec<CfgLoader>(LanguageManager::instance()->get("menu.main.saveconfig"), &GestorMenus::guardarMainConfig, refConfig, ico_saving, this));
 	menuRaiz->opciones.push_back(new OpcionExec<CONFIG_STATUS>(LanguageManager::instance()->get("menu.main.return"), &GestorMenus::volverEmulacion, &status, ico_resume, this));
 	menuRaiz->opciones.push_back(new OpcionExec<CONFIG_STATUS>(LanguageManager::instance()->get("menu.main.exit"), &GestorMenus::salirEmulacion, &status, ico_shutdown, this));
-	menuRaiz->opciones.push_back(new OpcionExec<CONFIG_STATUS>(trOrDefault("menu.main.poweroff", "Apagar consola (Forzado seguro)"), &GestorMenus::apagarConsolaForzado, &status, ico_shutdown, this));
 	
 	// Establecer estado inicial
     menuActual = menuRaiz;
@@ -283,6 +310,9 @@ void GestorMenus::poblarMenuEmulacion(Menu* menuEmulation, CfgLoader *refConfig)
 	//--------Opcion de mostrar emuladores vacios---------
 	menuEmulation->opciones.push_back(new OpcionBool(LanguageManager::instance()->get("menu.video.showempty"), &refConfig->configMain[cfg::showEmptyEmulators].getBoolRef()));
 
+	//--------Opcion de habilitar el suavizado de fuentes y transparencias ---------
+	menuEmulation->opciones.push_back(new OpcionBool(trOrDefault("menu.options.fontsmoothing", "Font smoothing"), &refConfig->configMain[cfg::smoothFonts].getBoolRef()));
+
 	//--------Menu de gestion de discos---------
 	menuDisks = new Menu(LanguageManager::instance()->get("menu.disk.control"), menuEmulation);
 	poblarMenuDiscos(BOOT_WITH_DISK);
@@ -317,6 +347,375 @@ void GestorMenus::poblarMenuEmulacion(Menu* menuEmulation, CfgLoader *refConfig)
 	listaLang->callback = &GestorMenus::selectLang;
 	listaLang->context  = langMenuData;
 
+}
+void GestorMenus::poblarMenuUpdater(Menu* menuEntrada, CfgLoader *refConfig){
+	this->menuUpdaterBios = new Menu(LanguageManager::instance()->get("menu.updater.bios"), menuEntrada);
+	todosLosMenus.push_back(this->menuUpdaterBios);
+	OpcionSubMenu *submenuUpdater = new OpcionSubMenu(LanguageManager::instance()->get("menu.updater.bios"), this->menuUpdaterBios);
+	//Rellenamos el menu en un callback para que no afecte a la velocidad de arranque del emulador
+	submenuUpdater->callback = &GestorMenus::fillBiosMenuAction;
+	submenuUpdater->context = this;	
+	menuEntrada->opciones.push_back(submenuUpdater);
+
+	this->menuUpdaterSbi = new Menu(LanguageManager::instance()->get("menu.updater.sbi"), menuEntrada);
+	todosLosMenus.push_back(this->menuUpdaterSbi);
+	OpcionSubMenu *submenuUpdaterSbi = new OpcionSubMenu(LanguageManager::instance()->get("menu.updater.sbi"), this->menuUpdaterSbi);
+	//Rellenamos el menu en un callback para que no afecte a la velocidad de arranque del emulador
+	submenuUpdaterSbi->callback = &GestorMenus::fillSbiMenuAction;
+	submenuUpdaterSbi->context = this;	
+	menuEntrada->opciones.push_back(submenuUpdaterSbi);
+
+}
+
+std::string GestorMenus::fillSbiMenuAction(void* inst){
+	GestorMenus* gestorMenus = static_cast<GestorMenus*>(inst);
+
+	CurlClient downloader;
+	std::string response;
+	float progress;
+	std::vector<t_bios_data> sbiDatabase;
+
+	if (downloader.fetchUrl("https://psxdatacenter.com/sbifiles.html", response, &progress)){
+		processHtmlSbi("https://psxdatacenter.com", response, sbiDatabase);
+
+		std::string system_path = dirutil::getPathPrefix("system");
+		CrcCache crcCache(system_path + Constant::getFileSep() + "salvia_crc.cache");
+
+		t_biosForSystem *biosForSystem = new t_biosForSystem();
+		biosForSystem->system = "PSX SBI Files";
+		biosForSystem->url = "";			//el elemento a descargar ya tiene la url completa
+		biosForSystem->submenu = NULL;		//No necesitamos un submenu para actualizar su estado
+		biosForSystem->allFound = true;		//Para indicar si se han encontrado todos los ficheros
+		biosForSystem->decompress = true;	//Para descomprimir los ficheros .7z
+
+		gestorMenus->menuUpdaterSbi->opciones.push_back(new OpcionExec<t_biosForSystem>(LanguageManager::instance()->get("menu.updater.bios.sys.save"), 
+			&GestorMenus::downloadBios, biosForSystem, ico_saving, gestorMenus));
+
+		for (std::size_t i=0; i < sbiDatabase[0].listBios.size(); i++){
+			t_bios *bios = new t_bios();
+
+			bios->filepath = sbiDatabase[0].dir + Constant::getFileSep() + sbiDatabase[0].listBios[i].file;
+			bios->urlpath = sbiDatabase[0].listBios[i].url;
+			bios->crc = sbiDatabase[0].listBios[i].crc;
+			if (!checkBiosCRC(crcCache, bios)){
+				biosForSystem->allFound = false;
+			}
+
+			biosForSystem->list.push_back(bios);
+
+			OpcionTxtAndDynProgressValue *option = new OpcionTxtAndDynProgressValue(sbiDatabase[0].listBios[i].file, bios->textFound);
+			option->progress = &bios->progress;
+			option->kb = &bios->kbReceived;
+			option->color = &bios->color;
+
+			gestorMenus->menuUpdaterSbi->opciones.push_back(option);
+		}
+	}
+	return "";
+}
+
+std::string GestorMenus::convertSbiName(const std::string &name){
+	//std::string resp = name;
+	//if (resp.length() == 10){
+		//resp = Constant::replaceAll(resp, "-", "_");
+	std::string resp = Constant::sanitizePathForXbox(name);
+	resp.append(EXT_7ZIP);
+	//}
+	return resp;
+}
+
+void GestorMenus::processHtmlSbi(const std::string &BASE, const std::string &data, std::vector<t_bios_data> &sbiDatabase){
+	std::size_t pos = 0;
+	static const std::string TABLE_LINE = "<td class=\"col2\"";
+	
+	t_bios_data sbiData;
+	sbiData.url = BASE;
+	sbiData.dir = dirutil::getPathPrefix("system\\patches\\psx");
+	LOG_DEBUG("System: %s", sbiData.system.c_str());
+
+	while ((pos = data.find(TABLE_LINE, pos)) != std::string::npos) {
+		pos += TABLE_LINE.size();
+
+		std::size_t NameTagStart = data.find('>', pos);
+		if (NameTagStart == std::string::npos) break;
+		std::size_t NameTagEnd = data.find("</td>", pos);
+		if (NameTagEnd == std::string::npos) break;
+
+		std::string filename = data.substr(NameTagStart + 1, NameTagEnd - NameTagStart - 1);
+
+		std::size_t aOpen = data.find("<a", pos);
+		if (aOpen == std::string::npos) break;
+		std::size_t aTagEnd = data.find('>', aOpen);
+		if (aTagEnd == std::string::npos) break;
+
+		std::string url = CurlClient::getHrefContent(data, aOpen, aTagEnd, BASE);
+		LOG_DEBUG("sbi: %s", url.c_str());
+		
+		std::size_t lastSep = url.find_last_of("/\\");
+		std::size_t startSearch = (lastSep == string::npos) ? 0 : lastSep + 1;
+
+		t_file_url fileOrUrl;
+		//fileOrUrl.file = url.substr(startSearch);
+		fileOrUrl.file = convertSbiName(filename);
+		fileOrUrl.url = CurlClient::escapeFullUrl(url);
+		fileOrUrl.crc = "";
+		sbiData.listBios.push_back(fileOrUrl);
+		pos = aTagEnd;
+	}
+	sbiDatabase.push_back(sbiData);
+}
+
+std::string GestorMenus::fillBiosMenuAction(void* inst){
+	GestorMenus* gestorMenus = static_cast<GestorMenus*>(inst);
+
+	if (!gestorMenus->menuUpdaterBios->opciones.empty()){
+		return "";
+	}
+	
+	std::string systemName;
+	std::vector<t_bios_data> biosDatabase;
+	std::string bios_xml_path = dirutil::getPathPrefix("assets\\extra\\system_bios.xml");
+	std::string system_path = dirutil::getPathPrefix("system");
+	
+	gestorMenus->parse_sysbios_xml(bios_xml_path, biosDatabase);
+	/* CRC de las BIOS con cache: solo se relee un fichero si cambia su tamano o
+	 * su fecha. Se guarda al salir de esta funcion (destructor). */
+	CrcCache crcCache(system_path + Constant::getFileSep() + "salvia_crc.cache");
+	
+	for (std::size_t i=0; i < biosDatabase.size(); i++){
+		systemName = biosDatabase[i].system;
+		Menu* menuBiosForSystem = new Menu(systemName, gestorMenus->menuUpdaterBios);
+		gestorMenus->todosLosMenus.push_back(menuBiosForSystem);
+
+		OpcionSubMenu *itemMenuSistema = new OpcionSubMenu(systemName, menuBiosForSystem, ico_menu_check);
+		gestorMenus->menuUpdaterBios->opciones.push_back(itemMenuSistema);
+	
+		t_biosForSystem *biosForSystem = new t_biosForSystem();
+		biosForSystem->system = systemName;
+		biosForSystem->url = biosDatabase[i].url;
+		biosForSystem->submenu = itemMenuSistema;
+	
+		//Boton para descargar las bios
+		menuBiosForSystem->opciones.push_back(new OpcionExec<t_biosForSystem>(LanguageManager::instance()->get("menu.updater.bios.sys.save"), 
+			&GestorMenus::downloadBios, biosForSystem, ico_saving, gestorMenus));
+	
+		//Add the required bios files for the system
+		for (std::size_t j=0; j < biosDatabase[i].listBios.size(); j++){
+			t_bios *bios = new t_bios();
+			
+			std::string biosFullPath = system_path;
+			std::string biosRelativePath;
+	
+			biosFullPath += Constant::getFileSep();
+			if (!biosDatabase[i].dir.empty()){
+				biosRelativePath += biosDatabase[i].dir + Constant::getFileSep();
+			}
+			biosRelativePath += Constant::replaceAll(biosDatabase[i].listBios[j].file, "/", "\\");
+			biosFullPath += biosRelativePath;
+
+			bios->filepath = biosFullPath;
+			bios->urlpath = biosDatabase[i].listBios[j].url;
+			bios->crc = biosDatabase[i].listBios[j].crc;
+			
+			if (!checkBiosCRC(crcCache, bios)){
+				biosForSystem->allFound = false;
+			}
+			
+			OpcionTxtAndDynProgressValue *option = new OpcionTxtAndDynProgressValue(biosDatabase[i].listBios[j].file, bios->textFound);
+			option->progress = &bios->progress;
+			option->kb = &bios->kbReceived;
+			option->color = &bios->color;
+
+			menuBiosForSystem->opciones.push_back(option);
+			biosForSystem->list.push_back(bios);
+		}
+
+		if (!biosForSystem->allFound){
+			itemMenuSistema->icon = ico_menu_error;
+		}
+	}
+	return "";
+}
+
+bool GestorMenus::checkBiosCRC(CrcCache &crcCache, t_bios *bios){
+	bool found = true;
+
+	if (dirutil::fileExists(bios->filepath.c_str())){
+		uint32_t crc = 0;
+		bios->textFound = LanguageManager::instance()->get(TXT_BIOSCHECKINGCRC);
+
+		crcCache.getCrc(bios->filepath, crc);   // solo lee el fichero si cambio tamano o fecha
+		char buf[11] = {0}; // Zero-initialize for automatic null termination
+		_snprintf_s(buf, sizeof(buf), _TRUNCATE, "%I32u", crc); 
+		
+		if (!bios->crc.empty() && bios->crc.compare(buf) != 0){
+			bios->textFound = LanguageManager::instance()->get(TXT_BIOSERRORCRC);
+			bios->status = BS_ERRORCRC;
+			bios->color = clRed;
+			found = false;
+			LOG_DEBUG("Error CRC: %s=%s", bios->filepath.c_str(), buf);
+		} else {
+			bios->textFound = LanguageManager::instance()->get(TXT_BIOSFOUND);
+			bios->status = BS_FOUND;
+			bios->color = clHighligtOption;
+		}
+	} else {
+		bios->textFound = LanguageManager::instance()->get(TXT_BIOSNOTFOUND);
+		bios->status = BS_NOTFOUND;
+		bios->color = clRed;
+		found = false;
+	}
+
+	return found;
+}
+
+std::string GestorMenus::downloadBios(t_biosForSystem* biosForSystem){
+	DWORD exitCode = 0;
+
+	if (hBiosDownThread != NULL && GetExitCodeThread(hBiosDownThread, &exitCode)){
+		if (exitCode == STILL_ACTIVE)
+			return LanguageManager::instance()->get("menu.updater.bios.msg.activedownload");
+	}
+
+	if (biosForSystem == NULL || this->obtenerMenuActual()->opciones.empty())
+		return "";
+
+	if (biosForSystem->allFound){
+		return LanguageManager::instance()->get("menu.updater.bios.msg.alldownloaded");
+	}
+
+	OpcionExec<t_biosForSystem>* btnExecuted = static_cast<OpcionExec<t_biosForSystem>*>(this->obtenerMenuActual()->opciones.front());
+	hBiosDownThread = CreateThread(NULL, 0, biosDownThread, btnExecuted, CREATE_SUSPENDED, NULL);
+	if (hBiosDownThread) {
+		Constant::setup_and_run_thread(hBiosDownThread, IO_THREAD, false);
+	}
+	return "";
+}
+
+DWORD WINAPI GestorMenus::biosDownThread(LPVOID lpParam) {
+	OpcionExec<t_biosForSystem>* btnExecuted = static_cast<OpcionExec<t_biosForSystem>*>(lpParam);
+
+	if (btnExecuted == NULL)
+		return 1;
+
+	t_biosForSystem *biosForSystem = btnExecuted->data;
+	if (biosForSystem == NULL)
+		return 1;
+
+	LOG_DEBUG("Descargando bios..");
+	LOG_DEBUG("Bios for system: %s with url %s", biosForSystem->system.c_str(), biosForSystem->url.c_str());
+		
+	dirutil dir;
+	CurlClient downloader;
+	float progress = 0.0f;
+	const std::string tempDir = Constant::getTmpDir();
+	const std::string localPath = tempDir + Constant::getFileSep() + "BiosDownload.zip";
+	const std::string system_path = dirutil::getPathPrefix("system");
+	bool ok = true;
+	const std::string btnInitialText = btnExecuted->titulo.getStr().c_str();
+	CrcCache crcCache(system_path + Constant::getFileSep() + "salvia_crc.cache");	
+
+	if (biosForSystem->url.find(".zip") != std::string::npos || biosForSystem->url.find("https://archive.org/compress/") != std::string::npos){
+		if (!dir.fileExists(localPath.c_str())){
+			ok = downloader.fetchFile(biosForSystem->url, localPath, &btnExecuted->titulo);
+			LOG_DEBUG("Download bios %s", ok ? "OK" : "FAILED");
+		}
+	
+		std::vector<string> pathsToExtract;
+		for (std::size_t i=0; i < biosForSystem->list.size(); i++){
+			if (biosForSystem->list[i]->status != BS_FOUND){
+				pathsToExtract.push_back(biosForSystem->list[i]->filepath);
+			}
+		}
+		extractFiles(localPath, pathsToExtract);
+
+	} else {
+		const int MAX_TRIES = 2;
+		for (std::size_t i=0; i < biosForSystem->list.size(); i++){
+			int tries = 0;
+			bool biosOk = false;
+
+			btnExecuted->titulo.setStr(Constant::TipoToStr((int) (100.0 * i / (float) biosForSystem->list.size())) + "%");
+
+			while (tries < MAX_TRIES && !biosOk && !checkBiosCRC(crcCache, biosForSystem->list[i])){
+				//LOG_DEBUG("Downloading url bios: %s", biosForSystem->url + biosForSystem->list[i]->urlpath);
+				std::string dirBios = dir.getFolder(biosForSystem->list[i]->filepath);
+				if (!dir.dirExists(dirBios.c_str()))
+					dir.createDirRecursive(dirBios.c_str());
+
+				biosForSystem->list[i]->color = clWhite;
+				biosForSystem->list[i]->textFound = LanguageManager::instance()->get(TXT_BIOSDOWNLOADING);
+
+				biosOk = downloader.fetchFile(biosForSystem->url + biosForSystem->list[i]->urlpath, 
+					biosForSystem->list[i]->filepath, &(biosForSystem->list[i]->progress), &(biosForSystem->list[i]->kbReceived));
+
+				biosForSystem->list[i]->kbReceived = 0.0f;   // fin de la descarga: el menu vuelve al texto
+
+				if (!biosOk){
+					biosForSystem->list[i]->textFound = LanguageManager::instance()->get(TXT_BIOSERRORDOWNLOAD);
+					biosForSystem->list[i]->status = BS_ERRORDOWNLOAD;
+					biosForSystem->list[i]->color = clRed;
+					SDL_Delay(1000);
+				} else if (checkBiosCRC(crcCache, biosForSystem->list[i])){
+					biosForSystem->list[i]->textFound = LanguageManager::instance()->get(TXT_BIOSDOWNLOADED);
+					biosForSystem->list[i]->status = BS_DOWNLOADED;
+
+					if (biosForSystem->decompress && biosForSystem->list[i]->filepath.find(EXT_7ZIP) != std::string::npos){
+						std::string err;
+						float prog;
+						SevenZip::extract(biosForSystem->list[i]->filepath, dirBios, NULL, &prog, &err);
+					}
+				} 
+				tries++;
+			}
+		}
+	}
+
+	bool allBiosFound = true;
+	for (std::size_t i=0; i < biosForSystem->list.size(); i++){
+		if (!checkBiosCRC(crcCache, biosForSystem->list[i])){
+			allBiosFound = false;
+		}
+	}
+
+	if (biosForSystem->submenu != NULL)
+		biosForSystem->submenu->icon = allBiosFound ? ico_menu_check : ico_menu_error;
+
+	if (ok && !localPath.empty()){
+		dir.borrarArchivo(localPath);
+	}
+
+	btnExecuted->titulo.setStr(btnInitialText);
+	return 0;
+}
+
+inline void GestorMenus::parse_sysbios_xml(const std::string& filepath, std::vector<t_bios_data>& biosDatabase){
+	pugi::xml_document doc;
+	if (!doc.load_file(filepath.c_str())) return;
+	
+	pugi::xml_node mame = doc.child("system");
+	const char* nodeFile = "file";
+	const char* nodeBios = "bios";
+	
+	for (pugi::xml_node game = mame.child(nodeFile); game; game = game.next_sibling(nodeFile)) 
+	{
+		t_bios_data data;
+		data.system = game.attribute("name").value();
+		data.url = game.attribute("url").value();
+		data.dir = game.child_value("dir");
+		LOG_DEBUG("System: %s", data.system.c_str());
+	
+		for (pugi::xml_node bios = game.child(nodeBios); bios; bios = bios.next_sibling(nodeBios)) 
+		{
+			LOG_DEBUG("Bios file: %s", bios.text().get());
+			t_file_url fileOrUrl;
+			fileOrUrl.file = bios.text().get();
+			fileOrUrl.url = bios.attribute("url").value();
+			fileOrUrl.crc = bios.attribute("crc").value();
+			data.listBios.push_back(fileOrUrl);
+		}
+		biosDatabase.push_back(data);
+	}
 }
 
 void GestorMenus::poblarMenuPad(Menu* menuEntrada, CfgLoader *refConfig, Joystick *joystick){
@@ -391,8 +790,10 @@ void GestorMenus::poblarMenuPad(Menu* menuEntrada, CfgLoader *refConfig, Joystic
 		todosLosMenus.push_back(menuControlesPuerto);
 	}
 
+	menuAssignRetro->opciones.push_back(new OpcionTxtAndDynValue(LanguageManager::instance()->get("menu.options.retropadconfig"), CfgLoader::appliedFileJoystick));
 	menuAssignRetro->opciones.push_back(new OpcionExec<Joystick>(LanguageManager::instance()->get("menu.options.savecoreassign"), &GestorMenus::guardarCoreJoysticks, joystick, ico_saving, this));
 	menuAssignRetro->opciones.push_back(new OpcionExec<Joystick>(LanguageManager::instance()->get("menu.options.savegameassign"), &GestorMenus::guardarGameJoysticks, joystick, ico_saving, this));
+	menuAssignRetro->opciones.push_back(new OpcionExec<Joystick>(LanguageManager::instance()->get("menu.options.retropaddefaults"), &GestorMenus::restaurarJoyConfig, joystick, ico_reload, this));
 
 	//Poblar menu hotkeys
 	poblarMenuHotkeys(menuHotkeys, joystick);
@@ -400,6 +801,12 @@ void GestorMenus::poblarMenuPad(Menu* menuEntrada, CfgLoader *refConfig, Joystic
 	poblarMenuRapidFire(menuRapidFire, joystick);
 	//Menu de teclas para el frontend
 	poblarMenuAssignFrontend(menuAssignFrontend, joystick);
+
+	// 240p Dream: Opciones de vibracion (Rumble) para N64 y PlayStation
+	menuEntrada->opciones.push_back(new OpcionBool("Rumble N64 (Rumble Pak)",
+		&refConfig->configMain[cfg::rumbleN64].getBoolRef()));
+	menuEntrada->opciones.push_back(new OpcionBool("Rumble PS1 (DualShock)",
+		&refConfig->configMain[cfg::rumblePS1].getBoolRef()));
 }
 
 /* Rellena rellenarVideoShaderStrings desde el registro de shaders. Idempotente y sin
@@ -431,6 +838,46 @@ void GestorMenus::rellenarVideoShaderStrings(){
 }
 
 void GestorMenus::poblarMenuVideo(Menu* menuVideo, CfgLoader *refConfig){
+	#ifdef _XBOX
+	/* 240p Dream: deteccion en tiempo real del plugin t240.xex en kernel */
+	{
+		const bool t240Active = (SDL_XBOX_IsT240Loaded() != 0);
+		menuVideo->opciones.push_back(new OpcionTxtAndValue(
+			"Plugin t240.xex",
+			t240Active ? "Activo (240p CRT listo)" : "NO DETECTADO (salida 480i)"));
+		if (!t240Active) {
+			menuVideo->opciones.push_back(new OpcionTxt(
+				"Aviso: Sin t240.xex saldra 480i en vez de 240p"));
+		}
+	}
+	/* 240p Dream CRT SwitchRes Horizontal Resolution (indices 0..3 preservados; 4=256x240, 5=320x240) */
+	{
+		std::vector<std::string> superResList;
+		superResList.push_back("640x240 (Native)");
+		superResList.push_back("1280x240 (2x Super-Res)");
+		superResList.push_back("1920x240 (3x Super-Res)");
+		superResList.push_back("2560x240 (4x Super-Res)");
+		superResList.push_back("256x240 (Low-Res 256)");
+		superResList.push_back("320x240 (Low-Res 320)");
+		OpcionLista *listaSuperRes = new OpcionLista("240p CRT Resolution (Global)", superResList,
+			&refConfig->configMain[cfg::crtSuperRes].getIntRef());
+		listaSuperRes->callback = &GestorMenus::selectCrtSuperRes;
+		listaSuperRes->context  = refConfig;
+		menuVideo->opciones.push_back(listaSuperRes);
+	}
+	/* Panel a 50 Hz para los juegos PAL (ver io/refresco50.h).  Se persiste el
+	 * indice, asi que el orden es el de REFRESH50_MODES.  Se aplica al cargar el
+	 * siguiente juego; ponerla a "No" con el panel a 50 Hz lo devuelve a 60. */
+	{
+		std::vector<std::string> modos50;
+		modos50.push_back(trOrDefault("menu.video.refresh50.no",      "No"));
+		modos50.push_back(trOrDefault("menu.video.refresh50.auto",    "Auto"));
+		modos50.push_back(trOrDefault("menu.video.refresh50.confirm", "Confirm"));
+		menuVideo->opciones.push_back(new OpcionLista(trOrDefault("menu.video.refresh50", "50 Hz for PAL games"),
+			modos50, &refConfig->configMain[cfg::refresh50Hz].getIntRef()));
+	}
+	#endif
+	
 	//Relacion de aspecto
 	std::vector<std::string> aspectRates;
 	for (int i=0; i < TOTAL_VIDEO_RATIO; i++){
@@ -438,7 +885,21 @@ void GestorMenus::poblarMenuVideo(Menu* menuVideo, CfgLoader *refConfig){
 	}
 	menuVideo->opciones.push_back(new OpcionLista(LanguageManager::instance()->get("menu.options.aspect"), aspectRates, &refConfig->configMain[cfg::aspectRatio].getIntRef()));
 
-	//240p Dream CRT puro: sin filtros de suavizado, siempre vecino cercano (D3DTEXF_POINT)
+	//Escalado de video
+    std::vector<std::string> filtros;
+
+#if defined(_XBOX) || defined(SALVIA_GPU_VIDEO)
+	for (std::size_t i=0; i < videoShaderStrings.size(); i++){
+		filtros.push_back(videoShaderStrings[i]);
+	}
+	menuVideo->opciones.push_back(new OpcionLista(LanguageManager::instance()->get("menu.options.scale"), filtros, &refConfig->configMain[cfg::shaderMode].getIntRef()));
+#else
+	for (int i=0; i < TOTAL_VIDEO_SCALE; i++){
+		filtros.push_back(videoScaleStrings[i]);
+	}
+	menuVideo->opciones.push_back(new OpcionLista(LanguageManager::instance()->get("menu.options.scale"), filtros, &refConfig->configMain[cfg::scaleMode].getIntRef()));
+#endif
+	
 	menuVideo->opciones.push_back(new OpcionBool(LanguageManager::instance()->get("menu.options.integerscale"), &refConfig->configMain[cfg::integerScale].getBoolRef()));
 	
 	std::vector<std::string> scaleInt;
@@ -447,15 +908,6 @@ void GestorMenus::poblarMenuVideo(Menu* menuVideo, CfgLoader *refConfig){
 	}
 	menuVideo->opciones.push_back(new OpcionLista(LanguageManager::instance()->get("menu.options.integerscale.type"), scaleInt, &refConfig->configMain[cfg::scaleIntMode].getIntRef()));
 
-	//Tema visual Frutiger Aero / estilos de interfaz
-	std::vector<std::string> themes;
-	themes.push_back("Frutiger Aero (Win7 Blue)");
-	themes.push_back("Crystal Ice (White/Silver)");
-	themes.push_back("Ocean 240p CRT (Midnight)");
-	themes.push_back("Retro Classic (Salvia)");
-	OpcionLista *listaTheme = new OpcionLista(trOrDefault("menu.video.theme", "Tema visual"), themes, &refConfig->configMain[cfg::uiTheme].getIntRef());
-	listaTheme->callback = &GestorMenus::selectTheme;
-	menuVideo->opciones.push_back(listaTheme);
 
 	//Animacion del fondo de pantalla del menu
 	std::vector<std::string> bgMenu;
@@ -472,8 +924,10 @@ void GestorMenus::poblarMenuVideo(Menu* menuVideo, CfgLoader *refConfig){
 	menuVideo->opciones.push_back(new OpcionBool(LanguageManager::instance()->get("menu.video.fullscreen"), &refConfig->configMain[cfg::fullscreen].getBoolRef()));
 	#endif
 
-	//Resolucion CRT 240p de juego: solo resoluciones nativas y super-resoluciones (el menu siempre es 640x480)
+	//Resolucion de pantalla (se aplica al REINICIAR). Entrada 0 = "Auto"
+	//(Xbox: XGetVideoMode del dashboard, capado a 720p; Windows: default 1280x720).
 	std::vector<std::string> resList;
+	resList.push_back("Auto");
 	for (int i=0; i < TOTAL_SCREEN_RES; i++){
 		resList.push_back(Constant::string_format("%dx%d", g_screenResolutions[i].w, g_screenResolutions[i].h));
 	}
@@ -481,33 +935,21 @@ void GestorMenus::poblarMenuVideo(Menu* menuVideo, CfgLoader *refConfig){
 	{
 		const int rw = refConfig->configMain[cfg::resolution_width].valueInt;
 		const int rh = refConfig->configMain[cfg::resolution_height].valueInt;
-		int f = 0;
-		if (rw > 0 && rh == 240){
+		if (rw > 0 && rh > 0){
 			const std::string cur = Constant::string_format("%dx%d", rw, rh);
-			for (int i=0; i < (int)resList.size(); i++){ if (resList[i] == cur){ f = i; break; } }
+			int f = -1;
+			for (int i=1; i < (int)resList.size(); i++){ if (resList[i] == cur){ f = i; break; } }
+			//valor del fichero fuera de la lista (p.ej. Windows editado a mano) -> anadir para no perderlo
+			if (f < 0){ resList.push_back(cur); f = (int)resList.size() - 1; }
+			refConfig->configMain[cfg::resolutionIndex].setPropValue(f);
 		}
-		refConfig->setWidth(g_screenResolutions[f].w);
-		refConfig->setHeight(g_screenResolutions[f].h);
-		refConfig->configMain[cfg::resolutionIndex].setPropValue(f);
 	}
 
 	
-	OpcionLista *listaRes = new OpcionLista(trOrDefault("menu.video.resolution", "Resolución de juego (240p CRT)"), resList, &refConfig->configMain[cfg::resolutionIndex].getIntRef());
+	OpcionLista *listaRes = new OpcionLista(LanguageManager::instance()->get("menu.video.resolution"), resList, &refConfig->configMain[cfg::resolutionIndex].getIntRef());
 	listaRes->callback = &GestorMenus::selectResolution;
 	listaRes->context  = refConfig;
 	menuVideo->opciones.push_back(listaRes);
-
-	//Estado en tiempo real del plugin t240.xex conectado a la memoria del emulador
-	{
-		unsigned int pver = 0, pmode = 0;
-		#ifdef _XBOX
-		SDL_XBOX_GetPluginStatus(&pver, &pmode);
-		#endif
-		std::string pluginStr = (pver != 0)
-			? Constant::string_format("Conectado v%u.%u (%s)", (pver >> 16) & 0xFF, (pver >> 8) & 0xFF, pmode == 0 ? "480i" : "240p")
-			: "En espera de t240.xex (se enlaza en runtime)";
-		menuVideo->opciones.push_back(new OpcionTxtAndValue(trOrDefault("menu.video.plugin", "Control Plugin t240.xex"), pluginStr));
-	}
 
 	//--------Menu de overscan---------
 	menuOverscan = new Menu(LanguageManager::instance()->get("menu.video.overscan"), menuVideo);
@@ -774,16 +1216,6 @@ void GestorMenus::iniciarFiltros(GameDataFields& gameDataFieldsFilter){
 	menuGameFilter->opciones.push_back(new OpcionBool(LanguageManager::instance()->get("menu.filter.parents"), &gameDataFieldsFilter.onlyParents));
 }
 
-static std::vector<std::string> buildCrtResOverrideList(const std::string &autoLabel){
-	std::vector<std::string> out;
-	out.push_back(autoLabel);
-	out.push_back("320x240");
-	out.push_back("640x240");
-	out.push_back("1280x240");
-	out.push_back("1920x240");
-	return out;
-}
-
 void GestorMenus::poblarMenuCoreOverrides(Menu *menu, CfgLoader *refConfig){
 	const std::string aspectTxt = LanguageManager::instance()->get("menu.options.aspect");
 	const std::string scaleOrShaderTxt = LanguageManager::instance()->get("menu.options.scale");
@@ -835,18 +1267,19 @@ void GestorMenus::poblarMenuCoreOverrides(Menu *menu, CfgLoader *refConfig){
 		syncStrings.push_back(syncOptionsStrings[i]);
 	}
 
-	const std::vector<std::string> resOverrides = buildCrtResOverrideList(autoOverrideTxt);
-	const std::string resOverrideTxt = trOrDefault("menu.core.overrides.resolution", "Resolución CRT 240p del sistema");
-
 	for (std::size_t i=0; i < refConfig->emulators.size() - 1; i++){
 		Menu *menuCore = new Menu(refConfig->emulators[i]->config.name, menu);
 		menu->opciones.push_back(new OpcionSubMenu(refConfig->emulators[i]->config.name, menuCore));
 		//Check if the system has more than one core available: eg: Megadrive has picodrive and genesis-plus-gx
 		checkMultipleSystemCore(refConfig, menuCore, i);
-		//Per-system 240p CRT output resolution
-		menuCore->opciones.push_back(new OpcionLista(resOverrideTxt, resOverrides, &refConfig->emulators[i]->config.crtResolution));
 		//Aspect ratio list
 		menuCore->opciones.push_back(new OpcionLista(aspectTxt, aspectRates, &refConfig->emulators[i]->config.aspectRatio));
+		//Shaders list
+		#if defined(_XBOX) || defined(SALVIA_GPU_VIDEO)
+		menuCore->opciones.push_back(new OpcionLista(scaleOrShaderTxt, filtros, &refConfig->emulators[i]->config.shaderMode));
+		#else
+		menuCore->opciones.push_back(new OpcionLista(scaleOrShaderTxt, filtros, &refConfig->emulators[i]->config.scaleMode));
+		#endif
 		//Integer scale enabler button
 		menuCore->opciones.push_back(new OpcionLista(intScaleTxt, enableScaleInt, &refConfig->emulators[i]->config.integerScale));
 		//Integer scale type
@@ -1040,16 +1473,13 @@ void GestorMenus::loadAchievements() {
 }
 
 std::string GestorMenus::selectBackground(void* inst, void *index, void *values) {
+	//Cambio en vivo del fondo del menu (sin salir del menu). El estado retenido
+	//se decide en setEmuStatus/arranque; aqui reflejamos el nuevo animBG.
+	//Guard de rango: solo BG_HLSL..BG_NONE mapean a un shader de fondo; el resto
+	//(tiles/imagen/none) apaga el fondo GPU.
 	if (!index) return "";
 	const int idx = *static_cast<int*>(index);
 	HLSLBackground_setActive((idx >= BG_HLSL && idx < BG_NONE) ? (idx - BG_HLSL + 1) : 0);
-	return "";
-}
-
-std::string GestorMenus::selectTheme(void* inst, void *index, void *values) {
-	if (!index) return "";
-	const int idx = *static_cast<int*>(index);
-	Constant::applyTheme(idx, SDL_GetVideoSurface());
 	return "";
 }
 
@@ -1118,21 +1548,63 @@ std::string GestorMenus::selectMusicVolume(void* inst, void *index, void *values
 }
 
 std::string GestorMenus::selectResolution(void* inst, void *index, void *values) {
-	//Resoluciones CRT 240p para lanzar juegos (el menu default.xex siempre arranca a 640x480).
+	//Escribe la resolucion elegida en la config; se aplica al REINICIAR (el arranque
+	//la lee). Parseamos la etiqueta seleccionada ("1280x720") para soportar tambien
+	//entradas anadidas fuera de la lista estandar; "Auto" -> centinela 0/0.
 	if (!inst || !index || !values) return "";
 	CfgLoader* cfg = static_cast<CfgLoader*>(inst);
 	const int idx = *static_cast<int*>(index);
 	std::vector<std::string>* labels = static_cast<std::vector<std::string>*>(values);
 	if (idx < 0 || idx >= (int)labels->size()) return "";
-	int w = 320, h = 240; char sep = 0;
+	int w = 0, h = 0; char sep = 0;
 	std::istringstream iss(labels->at(idx));
-	if ((iss >> w >> sep >> h) && sep == 'x' && h == 240){
+	if ((iss >> w >> sep >> h) && sep == 'x'){   //"1280x720"
 		cfg->setWidth(w);  cfg->setHeight(h);
 	} else {
-		cfg->setWidth(320);  cfg->setHeight(240);
+		cfg->setWidth(0);  cfg->setHeight(0);    //"Auto"
 	}
-	cfg->configMain[cfg::resolutionIndex].setPropValue(idx);
-	cfg->saveMainParams();
+	return "";
+}
+
+std::string GestorMenus::selectCrtSuperRes(void* inst, void *index, void *values) {
+	(void)inst; (void)values;
+	if (!index) return "";
+	const int idx = *static_cast<int*>(index);
+	#ifdef _XBOX
+	static const int kWidths[6] = { 640, 1280, 1920, 2560, 256, 320 };
+	if (idx >= 0 && idx < 6) {
+		SDL_XBOX_SetCrtSuperResWidth(kWidths[idx]);
+	}
+	if (!SDL_XBOX_IsT240Loaded()) {
+		return "Aviso: t240.xex no detectado. Saldra 480i en vez de 240p.";
+	}
+	#else
+	(void)idx;
+	#endif
+	return "";
+}
+
+std::string GestorMenus::selectCoreCrtSuperRes(void* inst, void *index, void *values) {
+	(void)values;
+	if (!index) return "";
+	const int idx = *static_cast<int*>(index);
+	#ifdef _XBOX
+	static const int kWidths[6] = { 640, 1280, 1920, 2560, 256, 320 };
+	int effectiveIdx = 3;
+	if (idx >= 1 && idx <= 6) {
+		effectiveIdx = idx - 1;
+	} else if (inst != NULL) {
+		CfgLoader* cfg = static_cast<CfgLoader*>(inst);
+		effectiveIdx = cfg->configMain[cfg::crtSuperRes].valueInt;
+		if (effectiveIdx < 0 || effectiveIdx >= 6) effectiveIdx = 3;
+	}
+	SDL_XBOX_SetCrtSuperResWidth(kWidths[effectiveIdx]);
+	if (!SDL_XBOX_IsT240Loaded()) {
+		return "Aviso: t240.xex no detectado. Saldra 480i en vez de 240p.";
+	}
+	#else
+	(void)inst; (void)idx;
+	#endif
 	return "";
 }
 
@@ -1413,10 +1885,11 @@ void GestorMenus::addControlerOptions(Menu*& menu, int controlId, Joystick *joys
 *
 */
 void GestorMenus::poblarJoystickTypes(Joystick *joystick){
+	m_joystickRef = joystick;
 	t_joyMenuData *menuJoystickRetro = new t_joyMenuData();
 
 	for (int i=0; i < (int)menuAssignRetro->opciones.size(); i++){
-		LOG_DEBUG("%s", menuAssignRetro->opciones[i]->titulo.c_str());
+		LOG_DEBUG("%s", menuAssignRetro->opciones[i]->titulo.getStr().c_str());
 		if (menuAssignRetro->opciones[i]->tipo == OPC_SUBMENU){
 			Menu* submenuJoy = ((OpcionSubMenu*)menuAssignRetro->opciones[i])->destino;
 			int numOpciones = submenuJoy->opciones.size();
@@ -1503,19 +1976,491 @@ void GestorMenus::poblarCoreOptions(CfgLoader *refConfig){
 
 	//Param independent options (kept at the menu root)
 	menuCoreOptions->opciones.push_back(new OpcionTxtAndDynValue(LanguageManager::instance()->get("menu.core.options.configfile"), refConfig->appliedFileParmsCore));
-	const std::vector<std::string> gameResOpts = buildCrtResOverrideList(LanguageManager::instance()->get("menu.core.overrides.auto") + " (Sistema/Global)");
-	menuCoreOptions->opciones.push_back(new OpcionLista(trOrDefault("menu.core.options.resolution", "Resolución de este juego (240p CRT)"), gameResOpts, &refConfig->gameCrtResolution));
-	menuCoreOptions->opciones.push_back(new OpcionExec<CfgLoader>(trOrDefault("menu.core.options.apply_resolution", "Aplicar resolución (reinicia juego)"), &GestorMenus::aplicarResolucionJuego, refConfig, ico_reload, this));
 	menuCoreOptions->opciones.push_back(new OpcionExec<CfgLoader>(LanguageManager::instance()->get("menu.core.options.save"), &GestorMenus::guardarCoreConfig, refConfig, ico_saving, this));
 	menuCoreOptions->opciones.push_back(new OpcionExec<CfgLoader>(LanguageManager::instance()->get("menu.core.options.savegame"), &GestorMenus::guardarCoreConfigGame, refConfig, ico_saving, this));
 	menuCoreOptions->opciones.push_back(new OpcionExec<CfgLoader>(LanguageManager::instance()->get("menu.core.options.restore"), &GestorMenus::restaurarCoreConfig, refConfig, ico_reload, this));
 	menuCoreOptions->opciones.push_back(new OpcionTxtAndValue(LanguageManager::instance()->get("menu.core.options.version"), string(refConfig->configMain[cfg::libretro_core].valueStr) + " " + refConfig->configMain[cfg::libretro_core_version].valueStr));
 	menuCoreOptions->opciones.push_back(new OpcionTxtAndValue(LanguageManager::instance()->get("menu.core.options.extensions"), refConfig->configMain[cfg::libretro_core_extensions].valueStr));
 
+	#ifdef _XBOX
+	// Per-core 240p CRT resolution override (hot-applied & persisted in core .opt)
+	{
+		static const char* const kCoreResLabels[7] = {
+			"Global (Default)",
+			"640x240 (Native)",
+			"1280x240 (2x Super-Res)",
+			"1920x240 (3x Super-Res)",
+			"2560x240 (4x Super-Res)",
+			"256x240 (Low-Res 256)",
+			"320x240 (Low-Res 320)"
+		};
+		std::map<std::string, std::unique_ptr<cfg::t_emu_props> >::iterator itRes =
+			refConfig->startupLibretroParams.find("dream_crt_super_res");
+		if (itRes == refConfig->startupLibretroParams.end()) {
+			cfg::t_emu_props *p = new cfg::t_emu_props();
+			p->selected = 0;
+			refConfig->startupLibretroParams["dream_crt_super_res"] = std::unique_ptr<cfg::t_emu_props>(p);
+			itRes = refConfig->startupLibretroParams.find("dream_crt_super_res");
+		}
+		cfg::t_emu_props *resProp = itRes->second.get();
+		if (resProp->values.size() != 7) {
+			resProp->values.clear();
+			for (int ri = 0; ri < 7; ++ri) {
+				resProp->values.push_back(kCoreResLabels[ri]);
+			}
+		}
+		if (resProp->selected < 0 || resProp->selected >= 7) resProp->selected = 0;
+		OpcionLista *coreResOpt = new OpcionLista("240p CRT Resolution (Core)", resProp->values, &resProp->selected);
+		coreResOpt->callback = &GestorMenus::selectCoreCrtSuperRes;
+		coreResOpt->context = refConfig;
+		menuCoreOptions->opciones.push_back(coreResOpt);
+	}
+	#endif
+
+	// Expose Port 1 Controller Type selector (e.g. PlayStation standard/Digital vs dualshock) right inside Core Options
+	if (m_joystickRef != NULL && m_joystickRef->g_ports[0].available_types.size() > 1) {
+		std::vector<std::string> padLabels;
+		for (std::size_t k = 0; k < m_joystickRef->g_ports[0].available_types.size(); ++k) {
+			padLabels.push_back(m_joystickRef->g_ports[0].available_types[k].second);
+		}
+		m_corePadCtx.joystick = m_joystickRef;
+		m_corePadCtx.menu = menuAssignRetro;
+		OpcionLista *padOpt = new OpcionLista(LanguageManager::instance()->get("menu.controller.type") + " (P1)", padLabels, &m_joystickRef->inputs.joyTypeIdx[0]);
+		padOpt->callback = &GestorMenus::setControllerType;
+		padOpt->context = &m_corePadCtx;
+		menuCoreOptions->opciones.push_back(padOpt);
+	}
+
 	//Main core options grouped by category (uncategorized ones stay at the root).
 	//Game-specific options (e.g. FBNeo dip-switches) grouped the same way.
 	addCoreOptionsByCategory(menuCoreOptions, refConfig->libretroCategories, paramsCore);
 	addCoreOptionsByCategory(menuCoreOptions, refConfig->libretroCategories, paramsGame);
+}
+
+static std::string getPreCoreOptFullPath(const std::string& optFileName) {
+	return Constant::getAppDir() + Constant::getFileSep() + "config" + Constant::getFileSep() + optFileName;
+}
+
+static void addPreOpt(GestorMenus::PreCoreProfile *prof, const std::string& key, const std::string& label,
+                      const char* const* vals, int count, int defIdx) {
+	GestorMenus::PreCoreOptEntry e;
+	e.key = key;
+	e.label = label;
+	for (int i = 0; i < count; ++i) e.values.push_back(vals[i]);
+	e.selected = defIdx;
+	prof->opts.push_back(e);
+}
+
+static void loadPreCoreOptValues(GestorMenus::PreCoreProfile *prof) {
+	std::vector<std::string> lines;
+	FileList::cargarVector(getPreCoreOptFullPath(prof->optFileName), lines);
+	if (lines.empty()) return;
+	for (std::size_t i = 0; i < lines.size(); ++i) {
+		const std::string& ln = lines[i];
+		if (ln.empty() || ln[0] == '#') continue;
+		std::size_t eq = ln.find('=');
+		if (eq == std::string::npos) continue;
+		std::string k = Constant::Trim(ln.substr(0, eq));
+		int v = Constant::strToTipo<int>(Constant::Trim(ln.substr(eq + 1)));
+		for (std::size_t j = 0; j < prof->opts.size(); ++j) {
+			if (prof->opts[j].key == k) {
+				if (v >= 0 && v < (int)prof->opts[j].values.size()) {
+					prof->opts[j].selected = v;
+				}
+				break;
+			}
+		}
+	}
+}
+
+std::string GestorMenus::guardarPreCoreProfile(PreCoreProfile *profile) {
+	if (!profile) return "";
+	std::string fullPath = getPreCoreOptFullPath(profile->optFileName);
+
+	/* Preserve any existing keys in the .opt file that are not edited here */
+	std::map<std::string, std::string> existingComments;
+	std::map<std::string, int> mergedValues;
+	std::vector<std::string> oldLines;
+	FileList::cargarVector(fullPath, oldLines);
+	std::string lastComment;
+	for (std::size_t i = 0; i < oldLines.size(); ++i) {
+		const std::string& ln = oldLines[i];
+		if (ln.empty()) continue;
+		if (ln[0] == '#') {
+			lastComment = ln;
+			continue;
+		}
+		std::size_t eq = ln.find('=');
+		if (eq != std::string::npos) {
+			std::string k = Constant::Trim(ln.substr(0, eq));
+			int v = Constant::strToTipo<int>(Constant::Trim(ln.substr(eq + 1)));
+			mergedValues[k] = v;
+			if (!lastComment.empty()) existingComments[k] = lastComment;
+		}
+		lastComment.clear();
+	}
+
+	/* Apply all edited options from this profile */
+	for (std::size_t i = 0; i < profile->opts.size(); ++i) {
+		const PreCoreOptEntry& e = profile->opts[i];
+		mergedValues[e.key] = e.selected;
+		std::string cmt = "#";
+		for (std::size_t v = 0; v < e.values.size(); ++v) {
+			cmt += e.values[v] + (v + 1 < e.values.size() ? " | " : "");
+		}
+		existingComments[e.key] = cmt;
+	}
+
+	std::vector<std::string> outLines;
+	for (std::map<std::string, int>::const_iterator it = mergedValues.begin(); it != mergedValues.end(); ++it) {
+		std::map<std::string, std::string>::const_iterator cit = existingComments.find(it->first);
+		if (cit != existingComments.end() && !cit->second.empty()) {
+			outLines.push_back(cit->second);
+		}
+		outLines.push_back(it->first + "=" + Constant::TipoToStr(it->second));
+	}
+
+	FileList::guardarVector(fullPath, outLines);
+	return LanguageManager::instance()->get("msg.cfg.savelocation") + fullPath;
+}
+
+void GestorMenus::poblarPreLaunchCoreOptions(CfgLoader *refConfig) {
+	(void)refConfig;
+	for (std::size_t i = 0; i < menuCoreOptions->opciones.size(); ++i)
+		delete menuCoreOptions->opciones[i];
+	menuCoreOptions->opciones.clear();
+	for (std::size_t i = 0; i < coreOptionSubmenus.size(); ++i)
+		delete coreOptionSubmenus[i];
+	coreOptionSubmenus.clear();
+	for (std::size_t i = 0; i < preCoreProfiles.size(); ++i)
+		delete preCoreProfiles[i];
+	preCoreProfiles.clear();
+
+	/* Only populate pre-launch core profiles in default.xex (game cores populate live via poblarCoreOptions). */
+	if (_stricmp(Constant::getAppExecutable().c_str(), "default.xex") != 0) {
+		return;
+	}
+
+	/* 1. PlayStation (PCSXR-360 / SwanStation HW) */
+	{
+		PreCoreProfile *psx = new PreCoreProfile();
+		psx->displayName = "PlayStation (PCSXR-360)";
+		psx->optFileName = "core_PCSXR-360.opt";
+		static const char* kPsxRes[]  = { "1x (Nativo 240p)", "2x (Alta Res)" };
+		static const char* kPsxPad[]  = { "Estandar / Digital (Defecto)", "DualShock (Analog + Vibracion)", "Analog Joystick" };
+		static const char* kPsxPgxp[] = { "Desactivado", "Lite (GTE Rapido)", "Completo" };
+		static const char* kOnOff[]   = { "Activado", "Desactivado" };
+		static const char* kOffOn[]   = { "Desactivado", "Activado" };
+		addPreOpt(psx, "pcsxr360_hw_resolution_scale",    "Resolucion interna (PS1)",     kPsxRes,  2, 0);
+		addPreOpt(psx, "pcsxr360_pad_type_p1",            "Tipo de mando (P1)",           kPsxPad,  3, 0);
+		addPreOpt(psx, "pcsxr360_pgxp",                   "PGXP (geometria sin temblor)", kPsxPgxp, 3, 0);
+		addPreOpt(psx, "pcsxr360_pgxp_culling",           "PGXP Culling",                 kOnOff,   2, 0);
+		addPreOpt(psx, "pcsxr360_pgxp_texture_correction","PGXP Correccion texturas",     kOnOff,   2, 0);
+		addPreOpt(psx, "pcsxr360_widescreen",             "Widescreen 16:9",              kOffOn,   2, 0);
+		loadPreCoreOptValues(psx);
+		preCoreProfiles.push_back(psx);
+	}
+
+	/* 2. Nintendo 64 (xbox64) */
+	{
+		PreCoreProfile *n64 = new PreCoreProfile();
+		n64->displayName = "Nintendo 64 (xbox64)";
+		n64->optFileName = "core_xbox64.opt";
+		static const char* kN64Res[]  = { "1x (320x240 Nativo)", "2x (640x480)" };
+		static const char* kN64Plug[] = { "glN64", "Rice" };
+		static const char* kOffOn[]   = { "Desactivado", "Activado" };
+		static const char* kN64Pak[]  = { "Controller Pak", "Ninguno", "Rumble Pak" };
+		static const char* kN64Cpu[]  = { "Recompilador", "Interprete" };
+		addPreOpt(n64, "xbox64_internal_resolution", "Resolucion interna (N64)", kN64Res,  2, 0);
+		addPreOpt(n64, "xbox64_plugin",              "Plugin grafico",           kN64Plug, 2, 0);
+		addPreOpt(n64, "xbox64_framebuffer",         "Emulacion Framebuffer",    kOffOn,   2, 1);
+		addPreOpt(n64, "xbox64_pak",                 "Accesorio mando (Pak)",    kN64Pak,  3, 0);
+		addPreOpt(n64, "xbox64_cpu",                 "Nucleo CPU",               kN64Cpu,  2, 0);
+		loadPreCoreOptValues(n64);
+		preCoreProfiles.push_back(n64);
+	}
+
+	/* 3. Super Nintendo (Snes9x) */
+	{
+		PreCoreProfile *p = new PreCoreProfile();
+		p->displayName = "Super Nintendo (Snes9x)";
+		p->optFileName = "core_Snes9x.opt";
+		static const char* kReg[]  = { "Auto", "NTSC", "PAL" };
+		static const char* kAsp[]  = { "4:3", "4:3 (Preserved)", "Uncorrected", "Auto", "NTSC", "PAL" };
+		static const char* kOvs[]  = { "~8 Pixels", "12 Pixels", "16 Pixels", "Auto (~8 Pixels)", "Desactivado" };
+		static const char* kM7[]   = { "Desactivado", "2x", "4x", "2x (H+V)", "4x (H+V)" };
+		static const char* kHr[]   = { "Desactivado", "Merge", "Blur" };
+		static const char* kNtsc[] = { "Desactivado", "Monochrome", "RF", "Composite", "S-Video", "RGB" };
+		static const char* kAud[]  = { "Gaussian", "Cubic", "Sinc", "None", "Linear" };
+		addPreOpt(p, "snes9x_region",              "Region consola",       kReg,  3, 0);
+		addPreOpt(p, "snes9x_aspect",              "Relacion de aspecto",  kAsp,  6, 0);
+		addPreOpt(p, "snes9x_overscan",            "Recorte Overscan",     kOvs,  5, 0);
+		addPreOpt(p, "snes9x_mode7_hires",         "HD Mode 7",            kM7,   5, 0);
+		addPreOpt(p, "snes9x_hires_blend",         "Mezcla Hi-Res",        kHr,   3, 0);
+		addPreOpt(p, "snes9x_blargg",              "Filtro Blargg NTSC",   kNtsc, 6, 0);
+		addPreOpt(p, "snes9x_audio_interpolation", "Interpolacion audio",  kAud,  5, 0);
+		loadPreCoreOptValues(p);
+		preCoreProfiles.push_back(p);
+	}
+
+	/* 4. Super Nintendo (Snes9x 2010) */
+	{
+		PreCoreProfile *p = new PreCoreProfile();
+		p->displayName = "Super Nintendo (Snes9x 2010)";
+		p->optFileName = "core_Snes9x 2010.opt";
+		static const char* kReg[]  = { "Auto", "NTSC", "PAL" };
+		static const char* kAsp[]  = { "4:3", "Uncorrected", "Auto", "NTSC", "PAL" };
+		static const char* kOnOff[]= { "Activado", "Desactivado" };
+		static const char* kAud[]  = { "Gaussian (Exacto)", "Cubic", "Sinc" };
+		static const char* kNtsc[] = { "Desactivado", "Monochrome", "RF", "Composite", "S-Video", "RGB" };
+		static const char* kFs[]   = { "Desactivado", "Auto", "Manual" };
+		addPreOpt(p, "snes9x_2010_region",              "Region consola",      kReg,   3, 0);
+		addPreOpt(p, "snes9x_2010_aspect",              "Relacion de aspecto", kAsp,   5, 0);
+		addPreOpt(p, "snes9x_2010_msu1_enhanced_audio", "Audio MSU-1",         kOnOff, 2, 0);
+		addPreOpt(p, "snes9x_2010_audio_interpolation", "Interpolacion audio", kAud,   3, 0);
+		addPreOpt(p, "snes9x_2010_blargg",              "Filtro Blargg NTSC",  kNtsc,  6, 0);
+		addPreOpt(p, "snes9x_2010_frameskip",           "Frameskip",           kFs,    3, 0);
+		loadPreCoreOptValues(p);
+		preCoreProfiles.push_back(p);
+	}
+
+	/* 5. Game Boy Advance (mGBA) */
+	{
+		PreCoreProfile *p = new PreCoreProfile();
+		p->displayName = "Game Boy Advance (mGBA)";
+		p->optFileName = "core_mGBA.opt";
+		static const char* kMod[]   = { "Autodetect", "Game Boy", "Super Game Boy", "Game Boy Color", "Super GBC", "Game Boy Advance" };
+		static const char* kOnOff[] = { "Activado", "Desactivado" };
+		static const char* kOffOn[] = { "Desactivado", "Activado" };
+		static const char* kCol[]   = { "Desactivado", "Game Boy Advance", "Game Boy Color", "Auto" };
+		static const char* kBld[]   = { "Desactivado", "Simple", "Smart", "LCD Ghosting (Exacto)", "LCD Ghosting (Rapido)" };
+		addPreOpt(p, "mgba_gb_model",              "Modelo Game Boy",      kMod,   6, 0);
+		addPreOpt(p, "mgba_use_bios",              "Usar BIOS si existe",  kOnOff, 2, 0);
+		addPreOpt(p, "mgba_skip_bios",             "Saltar intro BIOS",    kOffOn, 2, 0);
+		addPreOpt(p, "mgba_sgb_borders",           "Bordes Super GB",      kOnOff, 2, 0);
+		addPreOpt(p, "mgba_color_correction",      "Correccion de color",  kCol,   4, 0);
+		addPreOpt(p, "mgba_interframe_blending",   "Mezcla interframe",    kBld,   5, 0);
+		addPreOpt(p, "mgba_audio_low_pass_filter", "Filtro de audio",      kOffOn, 2, 0);
+		loadPreCoreOptValues(p);
+		preCoreProfiles.push_back(p);
+	}
+
+	/* 6. Sega Genesis / Mega Drive (Genesis Plus GX) */
+	{
+		PreCoreProfile *p = new PreCoreProfile();
+		p->displayName = "Sega Genesis (Genesis Plus GX)";
+		p->optFileName = "core_Genesis Plus GX.opt";
+		static const char* kReg[]   = { "Auto", "NTSC-U", "PAL", "NTSC-J" };
+		static const char* kVdp[]   = { "Desactivado", "NTSC (60Hz)", "PAL (50Hz)" };
+		static const char* kOffOn[] = { "Desactivado", "Activado" };
+		static const char* kBram[]  = { "Per-BIOS", "Per-Game" };
+		static const char* kAdd[]   = { "Auto", "Sega/Mega CD", "MegaSD", "None" };
+		addPreOpt(p, "genesis_plus_gx_region_detect", "Region del sistema", kReg,   4, 0);
+		addPreOpt(p, "genesis_plus_gx_vdp_mode",      "Forzar modo VDP",    kVdp,   3, 0);
+		addPreOpt(p, "genesis_plus_gx_bios",          "Boot ROM (BIOS)",    kOffOn, 2, 0);
+		addPreOpt(p, "genesis_plus_gx_system_bram",   "CD System BRAM",     kBram,  2, 0);
+		addPreOpt(p, "genesis_plus_gx_add_on",        "CD Add-on (MD)",     kAdd,   4, 0);
+		loadPreCoreOptValues(p);
+		preCoreProfiles.push_back(p);
+	}
+
+	/* 7. NES / Famicom (Nestopia) */
+	{
+		PreCoreProfile *p = new PreCoreProfile();
+		p->displayName = "NES / Famicom (Nestopia)";
+		p->optFileName = "core_Nestopia.opt";
+		static const char* kReg[]   = { "Auto", "NTSC", "PAL", "Famicom", "Dendy" };
+		static const char* kOffOn[] = { "Desactivado", "Activado" };
+		static const char* kNtsc[]  = { "Desactivado", "Composite", "S-Video", "RGB SCART", "Monochrome" };
+		static const char* kPal[]   = { "CXA2025AS (US)", "CXA2025AS (JP)", "Royaltea", "Consumer", "Canonical", "Alternative" };
+		static const char* kOvs[]   = { "0", "1", "2", "3", "4", "5" };
+		addPreOpt(p, "nestopia_favored_system",     "Region sistema",       kReg,   5, 0);
+		addPreOpt(p, "nestopia_fds_auto_insert",    "FDS Auto Insert",      kOffOn, 2, 0);
+		addPreOpt(p, "nestopia_blargg_ntsc_filter", "Filtro Blargg NTSC",   kNtsc,  5, 0);
+		addPreOpt(p, "nestopia_palette",            "Paleta de color",      kPal,   6, 0);
+		addPreOpt(p, "nestopia_overscan_v_top",     "Overscan superior",    kOvs,   6, 0);
+		addPreOpt(p, "nestopia_overscan_v_bottom",  "Overscan inferior",    kOvs,   6, 0);
+		loadPreCoreOptValues(p);
+		preCoreProfiles.push_back(p);
+	}
+
+	/* 8. Game Boy / Color (Gambatte) */
+	{
+		PreCoreProfile *p = new PreCoreProfile();
+		p->displayName = "Game Boy / Color (Gambatte)";
+		p->optFileName = "core_Gambatte.opt";
+		static const char* kCol[]  = { "Desactivado", "Auto", "GBC", "SGB", "Internal", "Custom" };
+		static const char* kPal[]  = { "GB - DMG", "GB - Pocket", "GB - Light", "GBC - Blue", "GBC - Brown", "GBC - Dark Blue" };
+		static const char* kCcor[] = { "GBC Only", "Always", "Desactivado" };
+		static const char* kCmod[] = { "Accurate", "Fast" };
+		addPreOpt(p, "gambatte_gb_colorization",           "Colorizacion GB",     kCol,  6, 0);
+		addPreOpt(p, "gambatte_gb_internal_palette",       "Paleta interna",      kPal,  6, 0);
+		addPreOpt(p, "gambatte_gbc_color_correction",      "Correccion color GBC",kCcor, 3, 0);
+		addPreOpt(p, "gambatte_gbc_color_correction_mode", "Modo correccion",     kCmod, 2, 0);
+		loadPreCoreOptValues(p);
+		preCoreProfiles.push_back(p);
+	}
+
+	/* 9. Atari 2600 (Stella 2014) */
+	{
+		PreCoreProfile *p = new PreCoreProfile();
+		p->displayName = "Atari 2600 (Stella 2014)";
+		p->optFileName = "core_Stella 2014.opt";
+		static const char* kDep[]   = { "16-bit", "24-bit" };
+		static const char* kPal[]   = { "Standard", "Z26" };
+		static const char* kMix[]   = { "Desactivado", "Simple", "Ghosting (65%)", "Ghosting (75%)", "Ghosting (85%)", "Ghosting (95%)" };
+		static const char* kOffOn[] = { "Desactivado", "Activado" };
+		static const char* kResp[]  = { "Linear", "Quadratic" };
+		addPreOpt(p, "stella2014_color_depth",             "Profundidad color",  kDep,   2, 0);
+		addPreOpt(p, "stella2014_palette",                 "Paleta de color",    kPal,   2, 0);
+		addPreOpt(p, "stella2014_mix_frames",              "Mezcla interframe",  kMix,   6, 0);
+		addPreOpt(p, "stella2014_low_pass_filter",         "Filtro de audio",    kOffOn, 2, 0);
+		addPreOpt(p, "stella2014_paddle_analog_response",  "Respuesta Paddle",   kResp,  2, 0);
+		loadPreCoreOptValues(p);
+		preCoreProfiles.push_back(p);
+	}
+
+	/* 10. MSX / MSX2 (blueMSX) */
+	{
+		PreCoreProfile *p = new PreCoreProfile();
+		p->displayName = "MSX / MSX2 (blueMSX)";
+		p->optFileName = "core_blueMSX.opt";
+		static const char* kMsx[]   = { "Auto", "MSX", "MSXturboR", "MSX2", "MSX2+", "SEGA - SG-1000" };
+		static const char* kSync[]  = { "Auto", "50Hz", "60Hz" };
+		static const char* kOvs[]   = { "Desactivado", "Activado", "MSX2" };
+		static const char* kOffOn[] = { "OFF", "ON" };
+		static const char* kOnOff[] = { "Activado", "Desactivado" };
+		addPreOpt(p, "bluemsx_msxtype",        "Tipo de maquina",   kMsx,   6, 0);
+		addPreOpt(p, "bluemsx_vdp_synctype",   "Sincronia VDP",     kSync,  3, 0);
+		addPreOpt(p, "bluemsx_overscan",       "Recorte Overscan",  kOvs,   3, 0);
+		addPreOpt(p, "bluemsx_nospritelimits", "Sin limite sprites",kOffOn, 2, 0);
+		addPreOpt(p, "bluemsx_ym2413_enable",  "Sonido YM2413",     kOnOff, 2, 0);
+		addPreOpt(p, "bluemsx_auto_rewind_cas","Auto Rewind Cas",   kOnOff, 2, 0);
+		loadPreCoreOptValues(p);
+		preCoreProfiles.push_back(p);
+	}
+
+	/* 11. Auto-discover any other saved config\core_*.opt files */
+	{
+		dirutil dir;
+		std::vector<std::unique_ptr<FileProps>> files;
+		std::string cfgDir = Constant::getAppDir() + Constant::getFileSep() + "config";
+		dir.listFiles(cfgDir.c_str(), files, ".opt", false, false);
+		for (std::size_t f = 0; f < files.size(); ++f) {
+			const std::string& fname = files[f]->filename;
+			if (fname.find("core_") != 0) continue;
+			bool already = false;
+			for (std::size_t k = 0; k < preCoreProfiles.size(); ++k) {
+				if (_stricmp(fname.c_str(), preCoreProfiles[k]->optFileName.c_str()) == 0) {
+					already = true;
+					break;
+				}
+			}
+			if (already) continue;
+
+			std::vector<std::string> lines;
+			FileList::cargarVector(getPreCoreOptFullPath(fname), lines);
+			if (lines.empty()) continue;
+
+			PreCoreProfile *prof = new PreCoreProfile();
+			std::string title = fname.substr(5);
+			std::size_t dot = title.rfind('.');
+			if (dot != std::string::npos) title = title.substr(0, dot);
+			prof->displayName = title;
+			prof->optFileName = fname;
+
+			std::string lastCmt;
+			for (std::size_t li = 0; li < lines.size(); ++li) {
+				const std::string& ln = lines[li];
+				if (ln.empty()) continue;
+				if (ln[0] == '#') {
+					lastCmt = ln.substr(1);
+					continue;
+				}
+				std::size_t eq = ln.find('=');
+				if (eq != std::string::npos && !lastCmt.empty()) {
+					PreCoreOptEntry e;
+					e.key = Constant::Trim(ln.substr(0, eq));
+					e.label = e.key;
+					e.selected = Constant::strToTipo<int>(Constant::Trim(ln.substr(eq + 1)));
+					std::vector<std::string> parts = Constant::splitChar(lastCmt, '|');
+					for (std::size_t pi = 0; pi < parts.size(); ++pi) {
+						e.values.push_back(Constant::Trim(parts[pi]));
+					}
+					if (!e.values.empty()) {
+						if (e.selected < 0 || e.selected >= (int)e.values.size()) e.selected = 0;
+						prof->opts.push_back(e);
+					}
+				}
+				lastCmt.clear();
+			}
+			if (!prof->opts.empty()) {
+				preCoreProfiles.push_back(prof);
+			} else {
+				delete prof;
+			}
+		}
+	}
+
+	/* Build submenus inside Opciones del nucleo (480i main menu) */
+	for (std::size_t i = 0; i < preCoreProfiles.size(); ++i) {
+		PreCoreProfile *prof = preCoreProfiles[i];
+		#ifdef _XBOX
+		// Ensure every core profile exposes per-core 240p CRT resolution (Global + 6 modes)
+		{
+			bool hasCrtRes = false;
+			for (std::size_t k = 0; k < prof->opts.size(); ++k) {
+				if (prof->opts[k].key == "dream_crt_super_res") {
+					hasCrtRes = true;
+					break;
+				}
+			}
+			if (!hasCrtRes) {
+				PreCoreOptEntry resE;
+				resE.key = "dream_crt_super_res";
+				resE.label = "240p CRT Resolution (Core)";
+				resE.values.push_back("Global (Default)");
+				resE.values.push_back("640x240 (Native)");
+				resE.values.push_back("1280x240 (2x Super-Res)");
+				resE.values.push_back("1920x240 (3x Super-Res)");
+				resE.values.push_back("2560x240 (4x Super-Res)");
+				resE.values.push_back("256x240 (Low-Res 256)");
+				resE.values.push_back("320x240 (Low-Res 320)");
+				resE.selected = 0;
+				// Load persisted dream_crt_super_res from config\<optFileName> if present
+				std::vector<std::string> savedLines;
+				FileList::cargarVector(getPreCoreOptFullPath(prof->optFileName), savedLines);
+				for (std::size_t si = 0; si < savedLines.size(); ++si) {
+					const std::string& sl = savedLines[si];
+					if (sl.empty() || sl[0] == '#') continue;
+					std::size_t eq = sl.find('=');
+					if (eq != std::string::npos && Constant::Trim(sl.substr(0, eq)) == "dream_crt_super_res") {
+						int sv = Constant::strToTipo<int>(Constant::Trim(sl.substr(eq + 1)));
+						if (sv >= 0 && sv < 7) resE.selected = sv;
+						break;
+					}
+				}
+				prof->opts.insert(prof->opts.begin(), resE);
+			}
+		}
+		#endif
+		Menu *sub = new Menu(prof->displayName, menuCoreOptions);
+		coreOptionSubmenus.push_back(sub);
+		for (std::size_t j = 0; j < prof->opts.size(); ++j) {
+			OpcionLista *preOpt = new OpcionLista(prof->opts[j].label, prof->opts[j].values, &prof->opts[j].selected);
+			#ifdef _XBOX
+			if (prof->opts[j].key == "dream_crt_super_res") {
+				preOpt->callback = &GestorMenus::selectCoreCrtSuperRes;
+				preOpt->context = refConfig;
+			}
+			#endif
+			sub->opciones.push_back(preOpt);
+		}
+		sub->opciones.push_back(new OpcionExec<PreCoreProfile>(
+			"Guardar opciones (" + prof->displayName + ")",
+			&GestorMenus::guardarPreCoreProfile, prof, ico_saving, this));
+		menuCoreOptions->opciones.push_back(new OpcionSubMenu(prof->displayName, sub, ico_settings_core));
+	}
 }
 
 /**
@@ -1761,7 +2706,7 @@ void GestorMenus::poblarPartidasGuardadas(CfgLoader *refConfig, std::string romp
 			// Para poder modificar el status si se pulsa este elemento y poder mostrar la emergente
 			opt->status = &this->status; 
 			// Titulo del elemento
-			opt->titulo = LanguageManager::instance()->get("menu.savestate.slot") + " " + (posSlot.empty() ? "0" : posSlot);
+			opt->titulo.setStr(LanguageManager::instance()->get("menu.savestate.slot") + " " + (posSlot.empty() ? "0" : posSlot));
 		}
 	}
 }
@@ -2320,7 +3265,18 @@ void GestorMenus::draw(SDL_Surface *video_page){
     //a letter is not fixed.
     const float pixelsScrollFps = std::max(ceil(face_h / (float)textFps), 1.0f);
 	int listPos = this->iniPos -1;
+	
+	//Create or re-create the alpha rect only when needed
+	SDL_Rect rectSelElem = {0, 0, this->getW() - marginX, face_h};
+	if (selecAlphaRec == NULL){
+		Image::createRectAlphaFilled(selecAlphaRec, rectSelElem, video_page->format, clBkgMenu, true);
+	} else if (selecAlphaRec->w != rectSelElem.w || selecAlphaRec->h != rectSelElem.h){
+		SDL_FreeSurface(selecAlphaRec);
+		selecAlphaRec = NULL;
+		Image::createRectAlphaFilled(selecAlphaRec, rectSelElem, video_page->format, clBkgMenu, true);
+	}
 
+	//Drawing the menu options
 	for (int i=this->iniPos; i < this->endPos && i < (int)this->menuActual->opciones.size(); ++i){
         const auto& option = this->menuActual->opciones.at(i);
 
@@ -2351,35 +3307,62 @@ void GestorMenus::draw(SDL_Surface *video_page){
 			drawImage(listPos, (OpcionImage *) option, video_page);
 			continue;
 		} else if (option->tipo == OPC_BOOLEANA){
-			line = option->titulo;// + " " + std::string(*((OpcionBool *)option)->valor ? "Y" : "N");
+			line = option->titulo.getStr().c_str();// + " " + std::string(*((OpcionBool *)option)->valor ? "Y" : "N");
 		} else if (option->tipo == OPC_LISTA){
 			int indice = *((OpcionLista *)option)->indice;
-			line = option->titulo;
+			line = option->titulo.getStr().c_str();
 			if ((unsigned int)indice < ((OpcionLista *)option)->items.size()){
 				value = "< " + ((OpcionLista *)option)->items.at(indice) + " >";
 			} else {
 				value = "";
 			}
 		} else if (option->tipo == OPC_SUBMENU){
-			line = option->titulo + " >";
+			line = option->titulo.getStr() + " >";
 		} else if (option->tipo == OPC_INT){
-			line = option->titulo;// + " " + ((OpcionInt *)option)->description + Constant::intToString(*((OpcionInt *)option)->valor);
+			line = option->titulo.getStr().c_str();// + " " + ((OpcionInt *)option)->description + Constant::intToString(*((OpcionInt *)option)->valor);
 			value = ((OpcionInt *)option)->description;
 		} else if (option->tipo == OPC_SHOW_TXT_VAL){
-			line = option->titulo;
+			line = option->titulo.getStr().c_str();
 			value = ((OpcionTxtAndValue *)option)->valor;
 			if (((OpcionTxtAndValue *)option)->callback == NULL){
 				valueColor = Constant::colors[clHighligtOption].sdlColor;
 			}
 		} else if (option->tipo == OPC_SHOW_DYNTXT_VAL){
-			line = option->titulo;
-			value = *((OpcionTxtAndDynValue *)option)->valor;
+			line = option->titulo.getStr().c_str();
+			OpcionTxtAndDynValue *OptVal = static_cast<OpcionTxtAndDynValue *>(option);
+			if (OptVal != NULL){
+				value = *(OptVal->valor);
+				if (OptVal->callback == NULL){
+					valueColor = Constant::colors[clHighligtOption].sdlColor;
+				}
+			}
+		} else if (option->tipo == OPC_SHOW_DYNTXT_PROG_VAL){
+			line = option->titulo.getStr().c_str();
+			OpcionTxtAndDynProgressValue *OptVal = static_cast<OpcionTxtAndDynProgressValue *>(option);
+			if (OptVal != NULL){
+				if (OptVal->progress != NULL && *(OptVal->progress) > 0.0f && *(OptVal->progress) < 1.0f){
+					char buffer[32];
+					sprintf_s(buffer, sizeof(buffer), "%.0f%%", *(OptVal->progress) * 100.0f);
+					value = buffer;
+				} else if (OptVal->kb != NULL && *(OptVal->kb) > 0.0f){
+					/* Descarga sin tamano conocido (servidor sin Content-Length): se
+					 * muestran los KB recibidos (en MB con un decimal a partir de 1000 KB). */
+					char buffer[32];
+					if (*(OptVal->kb) >= 1024.0f)
+						sprintf_s(buffer, sizeof(buffer), "%.1f MB", *(OptVal->kb) / 1024.0f);
+					else
+						sprintf_s(buffer, sizeof(buffer), "%.0f KB", *(OptVal->kb));
+					value = buffer;
+				} else {
+					value = *(OptVal->valor);
+				}
 
-			if (((OpcionTxtAndDynValue *)option)->callback == NULL){
-				valueColor = Constant::colors[clHighligtOption].sdlColor;
+				if (OptVal->callback == NULL && OptVal->color != NULL && *OptVal->color < clTotalColors){
+					valueColor = Constant::colors[*OptVal->color].sdlColor;
+				}
 			}
 		} else {
-			line = option->titulo;
+			line = option->titulo.getStr().c_str();
 		}
 
 		const int screenPos = listPos - this->iniPos;
@@ -2391,14 +3374,15 @@ void GestorMenus::draw(SDL_Surface *video_page){
         //Drawing a faded background selection rectangle
         if (listPos == this->curPos){
             int y = this->getY() + fontHeightRect;
-            //Gaining some extra fps when the screen resolution is low
 			SDL_Rect rectElem = {this->getX(), y, this->getW() - marginX, face_h};
+			
             if (video_page->h >= 480){
-				DrawRectAlpha(video_page, rectElem, Constant::colors[clBkgMenu].sdlColor, 190);
+				SDL_BlitSurface(selecAlphaRec, NULL, video_page, &rectElem);
             } else {
+				//Gaining some extra fps when the screen resolution is low
                 lineTextColor = Constant::colors[clWhite].sdlColor;
+				rect(video_page, rectElem.x - 1, rectElem.y - 1, rectElem.x + rectElem.w, rectElem.y + rectElem.h, Constant::colors[clBkgMenu].sdlColor);
             }
-			rect(video_page, rectElem.x - 1, rectElem.y - 1, rectElem.x + rectElem.w, rectElem.y + rectElem.h, Constant::colors[clBkgMenu].sdlColor);
         }
         
 		int marginIco = 0;
@@ -2628,7 +3612,7 @@ void GestorMenus::drawAskMenu(SDL_Surface *video_page) {
     rect(video_page, thumbRect.x - 1, thumbRect.y - 1, thumbRect.x + thumbRect.w + 1, thumbRect.y + thumbRect.h + 1, Constant::colors[clAskLine].sdlColor);
 
     Opcion* opt = menuAskSavestates->opciones[0];
-    Fonts::drawTextTransparent(video_page, fontMenu, opt->titulo.c_str(), 
+    Fonts::drawTextTransparent(video_page, fontMenu, opt->titulo.getStr().c_str(), 
                                  titleRect.x + marginTitle, titleRect.y + (titleRect.h - face_h_big) / 2, Constant::colors[clAskText].sdlColor, 0);
 
     if (opt->tipo == OPC_LISTA) {
@@ -2828,7 +3812,7 @@ void GestorMenus::drawSavestateWithImage(int i, OpcionSavestate *opcion, SDL_Sur
     const int fontHeightRect = screenPos * face_h_big;
     const int lineBackground = -1;
     SDL_Color lineTextColor = i == this->curPos ? Constant::colors[clBlack].sdlColor : Constant::colors[clWhite].sdlColor;
-	const std::string line = opcion->titulo;
+	const std::string line = opcion->titulo.getStr().c_str();
 	std::string rutaSelected;
 
 	drawSelectionBox(i, video_page, lineTextColor);
@@ -2854,13 +3838,8 @@ void GestorMenus::drawSavestateWithImage(int i, OpcionSavestate *opcion, SDL_Sur
 	
 	//Drawing the image
 	if (!rutaSelected.empty() && lastImagePath != rutaSelected){
-
 		std::string rutaImg = opcion->file.dir + Constant::getFileSep() + opcion->file.filename + STATE_IMG_EXT;
-		#ifdef _XBOX
-		//Filtramos nombres largos o caracteres extranyos
-		rutaImg = Constant::checkPath(rutaImg);
-		#endif
-		imageSavestate.loadImage(rutaImg);
+		imageSavestate.loadImage(rutaImg, video_page->format);
 		lastImagePath = opcion->file.filename;
 	}
 
@@ -3060,27 +4039,6 @@ std::string GestorMenus::guardarCoreConfigGame(CfgLoader *refConfig){
 	return refConfig->saveGameCoreParams(romPaths.rompath);
 }
 
-extern std::string g_peekedLaunchRom;
-
-std::string GestorMenus::aplicarResolucionJuego(CfgLoader *refConfig){
-	if (!refConfig || romPaths.rompath.empty())
-		return LanguageManager::instance()->get("msg.key.cfg.load");
-
-	std::string msg = refConfig->saveGameCoreParams(romPaths.rompath);
-	#ifdef _XBOX
-	if (_stricmp(Constant::getAppExecutable().c_str(), "default.xex") != 0){
-		SDL_PauseAudio(1);
-		SDL_XBOX_SetPluginCommand(2);
-		SDL_Delay(150);
-		Launcher launcher;
-		const std::string exePath = Constant::getAppDir() + Constant::getFileSep() + Constant::getAppExecutable();
-		const std::string launchArg = !g_peekedLaunchRom.empty() ? g_peekedLaunchRom : romPaths.rompath;
-		launcher.launchXboxWin(exePath, launchArg);
-	}
-	#endif
-	return msg;
-}
-
 // Restaura TODAS las opciones del core (core + game-specific) a su valor por
 // defecto. El default lo declara el core en el parse (applyEntry -> defaultSelected).
 // setParameter sirve values[selected] en GET_VARIABLE, asi que basta reponer
@@ -3125,6 +4083,12 @@ std::string GestorMenus::restaurarCoreConfig(CfgLoader *refConfig){
 	return LanguageManager::instance()->get("menu.core.options.restore.applied");
 }
 
+std::string GestorMenus::restaurarJoyConfig(Joystick* joy){
+	LOG_DEBUG("Restaurando opciones del joystick a sus valores por defecto");
+	joy->clearRetroJoyIni();
+	return "";
+}
+
 std::string GestorMenus::guardarMainConfig(CfgLoader *refConfig){
 	LOG_DEBUG("Guardando valores principales de configuracion");
 	return refConfig->saveMainParams();
@@ -3143,16 +4107,6 @@ std::string GestorMenus::volverEmulacion(CONFIG_STATUS *st){
 std::string GestorMenus::salirEmulacion(CONFIG_STATUS *st){
 	*st = EXIT_EMULATION;
 	return std::string("");
-}
-
-std::string GestorMenus::apagarConsolaForzado(CONFIG_STATUS *st){
-	#ifdef _XBOX
-	SDL_XBOX_SetPluginCommand(3); /* DREAM_CMD_POWEROFF -> t240.xex restaura 480i y corta SMC */
-	return std::string("Restaurando 480i y apagando consola...");
-	#else
-	*st = EXIT_EMULATION;
-	return std::string("");
-	#endif
 }
 
 std::string GestorMenus::startScrapping(CONFIG_STATUS *st){
@@ -3189,7 +4143,7 @@ std::string GestorMenus::startScrapping(CONFIG_STATUS *st){
 			auto* baseOpt = menuScrapper->opciones.back();
 			OpcionExec<CONFIG_STATUS>* opcion = static_cast<OpcionExec<CONFIG_STATUS>*>(baseOpt);
 			if (opcion != nullptr) {
-				opcion->titulo = LanguageManager::instance()->get("menu.scrap.stop");
+				opcion->titulo.setStr(LanguageManager::instance()->get("menu.scrap.stop"));
 				opcion->execfunc = &GestorMenus::stopScrapping;
 			}
 		}
@@ -3211,7 +4165,7 @@ std::string GestorMenus::stopScrapping(CONFIG_STATUS *st){
 		if (opcion != nullptr) {
 			if (Scrapper::isScrapping())
 				InterlockedExchange(&CurlClient::g_abortScrapping, 1);
-			opcion->titulo = LanguageManager::instance()->get("menu.scrap.start");
+			opcion->titulo.setStr(LanguageManager::instance()->get("menu.scrap.start"));
 			opcion->execfunc = &GestorMenus::startScrapping;
 		}
 	}

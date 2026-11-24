@@ -1,6 +1,6 @@
 #include <http/httputil.h>
-#include <const/constant.h>
 #include <stdarg.h>
+#include <io/dirutil.h>
 
 static const char* USERAGENT = "Mozilla/5.0 (Windows NT 6.1; WOW64; rv:45.0) Gecko/20100101 Firefox/45.0";
 volatile long CurlClient::g_abortScrapping;
@@ -160,7 +160,12 @@ bool CurlClient::fetchUrl(const std::string& url, std::string& outResponse, floa
 
 	// Opciones adicionales
     curl_easy_setopt(curl, CURLOPT_USERAGENT, USERAGENT);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L); // 10 segundos
+    //curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L); // 10 segundos
+	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);   // solo conectar
+	curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 200L); // si baja de 200 B/s...
+	curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 10L);   // ...durante 10s -> abortar
+	curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L); // Treat HTTP 4xx/5xx as curl error
+
 	curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 
 	// SSL / TLS options
@@ -310,29 +315,63 @@ bool CurlClient::postUrl(const std::string& url, const std::string& postData, st
 	return postUrl(url, postData, USERAGENT, outResponse, progressPtr);
 }
 
+// Buffer de la libreria de C para el fichero de fetchFile: agrupa los trozos que
+// entrega curl (hasta 16 KB, CURL_MAX_WRITE_SIZE) en escrituras de 512 KB, en vez
+// de una escritura a disco por cada trozo recibido.
+#define FETCH_FILE_BUFFER (512 * 1024)
+
+bool CurlClient::fetchFile(const std::string& url, const std::string& localPath, float* progressPtr, float* kbPtr) {
+	return fetchFileInternal(url, localPath, progressPtr, kbPtr, NULL);
+}
+
+bool CurlClient::fetchFile(const std::string& url, const std::string& localPath, t_lockingStr *progressStrPtr) {
+	return fetchFileInternal(url, localPath, NULL, NULL, progressStrPtr);
+}
+
 // Anyade esto a los metodos publicos de tu clase
-bool CurlClient::fetchFile(const std::string& url, const std::string& localPath, float* progressPtr) {
+bool CurlClient::fetchFileInternal(const std::string& url, const std::string& localPath, float* progressPtr, float* kbPtr, 
+									t_lockingStr *progressStrPtr) {
 	CURL *curl = curl_easy_init();
 	if (!curl) return false;
+	dirutil dir;
+
+	//Comprobar si existe el directorio
+	const std::string folder = dir.getFolder(localPath);
+	if (!dirutil::dirExists(folder.c_str())){
+		LOG_DEBUG("Creating parent dir %s", folder.c_str());
+		dir.createDirRecursive(folder.c_str());
+	}
 
 	// Abrimos el archivo en modo binario para escritura
 	FILE* fp = fopen(localPath.c_str(), "wb");
 	if (!fp) {
 		curl_easy_cleanup(curl);
+		LOG_DEBUG("File can't be openned for writing");
 		return false;
 	}
+
+	// Buffer grande: no escribir en disco con cada trozo que llega de la red
+	setvbuf(fp, NULL, _IOFBF, FETCH_FILE_BUFFER);
 
 	ProgressData pData;
 	pData.progressVar = progressPtr;
 	if (progressPtr) *progressPtr = 0.0f;
+	pData.kbVar = kbPtr;
+	if (kbPtr) *kbPtr = 0.0f;
+	pData.progressStrVar = progressStrPtr;
+	if (progressStrPtr) progressStrPtr->setStr("0%");
+
+	#ifdef NET_DEBUG
+	curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+	curl_easy_setopt(curl, CURLOPT_DEBUGFUNCTION, CurlClient::debug_callback);
+	#endif
 
 	// Configuracion de la URL y SSL
 	curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
 	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
 	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
 
-	// Callback para escribir directamente al archivo
-	// Usamos el callback estandar de cURL para FILE*
+	// Escritura al archivo con fwrite (bufferizada por setvbuf)
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, NULL); // NULL usa fwrite por defecto
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
 
@@ -348,11 +387,13 @@ bool CurlClient::fetchFile(const std::string& url, const std::string& localPath,
 	// corto, abortamos por ESTANCAMIENTO: si el ritmo baja de 200 B/s durante 20s se
 	// cancela, pero una descarga lenta que PROGRESA llega a completarse. Dejamos un tope
 	// absoluto amplio de seguridad y un limite para la fase de conexion.
-	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 20L);   // solo conectar
+	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);   // solo conectar
 	curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 200L); // si baja de 200 B/s...
-	curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 20L);   // ...durante 20s -> abortar
-	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 180L);         // tope absoluto de seguridad
+	curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 10L);   // ...durante 10s -> abortar
 	curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L); // Treat HTTP 4xx/5xx as curl error
+	//No queremos que la descarga se aborte a los 180 segundos. Confiamos en el limite de velocidad
+	//y por eso comentamos la línea
+	//curl_easy_setopt(curl, CURLOPT_TIMEOUT, 180L);         // tope absoluto de seguridad
 
 	// callback para llamar fuera a internet
 	#ifdef _XBOX
@@ -388,6 +429,34 @@ std::string CurlClient::escape(const std::string& text) {
 	return escapedStr;
 }
 
+std::string CurlClient::escapeFullUrl(const std::string& text) {
+    CURLU *h = curl_url();
+    if (!h) {
+        return text; // Fallo al asignar memoria para CURLU
+    }
+
+    // 1. Comprobamos si curl_url_set acepta la URL
+    CURLUcode rc = curl_url_set(h, CURLUPART_URL, text.c_str(), CURLU_URLENCODE | CURLU_ALLOW_SPACE);
+    if (rc != CURLUE_OK) {
+        curl_url_cleanup(h); // Liberamos h antes de salir
+        return "";           // O devuelve text, evita devolver NULL
+    }
+
+    char *encoded_url = NULL;
+    // 2. Comprobamos si curl_url_get extrajo la cadena correctamente
+    rc = curl_url_get(h, CURLUPART_URL, &encoded_url, 0);
+    
+    std::string result;
+    if (rc == CURLUE_OK && encoded_url != NULL) {
+        result = encoded_url;     // Copiamos a std::string
+        curl_free(encoded_url);   // Liberamos la memoria reservada por libcurl
+    }
+
+    // 3. Limpiamos el manejador CURLU siempre
+    curl_url_cleanup(h);
+    
+    return result;
+}
 // Callback estatico para recibir datos
 std::size_t CurlClient::WriteCallback(void *contents, std::size_t size, std::size_t nmemb, void *userp) {
     /* NULL check defensivo: si por alguna razon userp llega NULL,
@@ -402,7 +471,7 @@ std::size_t CurlClient::WriteCallback(void *contents, std::size_t size, std::siz
     if (!contents || size == 0 || nmemb == 0) {
         return 0;
     }
-    size_t totalSize = size * nmemb;
+    std::size_t totalSize = size * nmemb;
     ((std::string*)userp)->append((char*)contents, totalSize);
     return totalSize;
 }
@@ -415,9 +484,30 @@ int CurlClient::ProgressCallback(void* clientp, double dltotal, double dlnow, do
     }
 	
 	ProgressData* p = (ProgressData*)clientp;
-    if (p && p->progressVar && dltotal > 0) {
-        *(p->progressVar) = (float)(dlnow / dltotal);
-    }
+	if (p) {
+		/* dltotal solo se conoce si el servidor manda Content-Length. Las descargas
+		 * troceadas (chunked; p.ej. ficheros sacados de un .rar/.zip de archive.org
+		 * con view_archive.php) lo dejan siempre a 0: entonces solo hay KB recibidos.
+		 * progressVar es una fraccion 0..1 (el menu de BIOS la pinta x100). */
+		if (p->progressVar && dltotal > 0)
+			*(p->progressVar) = (float)(dlnow / dltotal);
+		if (p->kbVar)
+			*(p->kbVar) = (float)(dlnow / 1024.0);
+		
+		if (p->progressStrVar) {
+			static char buf[50]; // Buffer temporal local (no hace falta en el struct)
+			if (dltotal > 0.0) {
+				int pct = static_cast<int>((dlnow / dltotal) * 100.0);
+				_snprintf(buf, 50, "%d%%", pct);
+			} else {
+				_snprintf(buf, 50, "%.0f KB", dlnow / 1024.0);
+			}
+        
+			// Al asignar al puntero desreferenciado, actualizamos el string original:
+			// Bloqueamos -> Escribimos -> Desbloqueamos
+			p->progressStrVar->setStr(buf);
+		}
+	}
     return 0;
 }
 
@@ -427,6 +517,26 @@ int CurlClient::curl_sockopt_callback(void *clientp, curl_socket_t curlfd, curls
 	// Aplicamos el parche magico de Xbox 360
 	if (setsockopt(curlfd, SOL_SOCKET, 0x5801, (char*)&bypass, sizeof(bypass)) != 0) {
 		LOG_DEBUG("Error aplicando bypass en socket de cURL\n");
+	}
+
+	/* Buffer de recepcion TCP. Sin XNetStartup propio, la 360 da a cada socket
+	 * 16 KB (cfgSockDefaultRecvBufsizeInK, winsockx.h): como la ventana TCP no
+	 * puede ser mayor que el buffer, la velocidad maxima queda en 16 KB / RTT
+	 * (~100 KB/s contra servidores de EE.UU. como archive.org). Se amplia aqui,
+	 * antes de connect(), que es cuando se anuncia la ventana. */
+	int rcvbuf = 256 * 1024;
+	if (setsockopt(curlfd, SOL_SOCKET, SO_RCVBUF, (char*)&rcvbuf, sizeof(rcvbuf)) != 0) {
+		LOG_DEBUG("Error ampliando SO_RCVBUF del socket de cURL (%d)\n", WSAGetLastError());
+	}
+	{
+		static bool informado = false;   /* solo la primera vez: valor que acepta el sistema */
+		if (!informado) {
+			int efectivo = 0;
+			int len = sizeof(efectivo);
+			if (getsockopt(curlfd, SOL_SOCKET, SO_RCVBUF, (char*)&efectivo, &len) == 0)
+				LOG_DEBUG("cURL: SO_RCVBUF pedido %d, efectivo %d\n", rcvbuf, efectivo);
+			informado = true;
+		}
 	}
 	return CURL_SOCKOPT_OK;
 }
@@ -449,6 +559,25 @@ int CurlClient::debug_callback(CURL *handle, curl_infotype type,
         }
     }
     return 0;
+}
+
+std::string CurlClient::getHrefContent(const std::string &data, std::size_t startPos, std::size_t aTagEnd, std::string base, std::string prop){
+	std::string url;
+	size_t propContentIni = std::string(prop + "=\"").length();
+	// href del enlace (viene con backslashes: \snes\588436-...) -> URL completa
+	size_t propPos = data.find(prop + "=\"", startPos);
+	if (propPos != std::string::npos && propPos < aTagEnd) {
+		size_t hrefStart = propPos + propContentIni; // strlen("href=\"")
+		size_t hrefEnd = data.find('"', hrefStart);
+		if (hrefEnd != std::string::npos) {
+			std::string href = data.substr(hrefStart, hrefEnd - hrefStart);
+			for (size_t i = 0; i < href.size(); ++i)
+				if (href[i] == '\\') href[i] = '/';
+			if (!href.empty())
+				url = base + (base.back() != '/' && href.front() != '/' ? "/" : "") + href;
+		}
+	}
+	return url;
 }
 
 #ifdef _XBOX

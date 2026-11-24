@@ -6,7 +6,9 @@
 #include <gfx/SDL_gfxPrimitives.h>
 #include <gfx/gfx_utils.h>
 #include <io/cfgloader.h>
+#include <uiobjects/image.h>
 #include <ostream>
+
 #ifdef _XBOX
 	#include <xtl.h> // Cabecera obligatoria del XDK de Xbox
 #endif
@@ -229,15 +231,12 @@ void ListMenu::draw(SDL_Surface *video_page, bool haveFocus){
 	const SDL_Color colorTextNotSel = haveFocus ? Constant::colors[clWhite].sdlColor : Constant::colors[clDarkGray].sdlColor;
 
 	//Creamos el rectangulo de elemento seleccionado translucido
-	static int s_lastThemeVer = -1;
 	SDL_Rect rectElem = {0, 0, this->getW() - 2 * marginX, face_h_big};
-	if (selecAlphaRec == NULL || selecAlphaRec->w != rectElem.w || selecAlphaRec->h != rectElem.h || s_lastThemeVer != Constant::themeVersion){
+	if (selecAlphaRec == NULL || selecAlphaRec->w != rectElem.w || selecAlphaRec->h != rectElem.h){
 		if (selecAlphaRec != NULL){
 			SDL_FreeSurface(selecAlphaRec);
-			selecAlphaRec = NULL;
 		}
-		Constant::createRectAlphaFilled(selecAlphaRec, rectElem, video_page->format, clBkgMenu, true);
-		s_lastThemeVer = Constant::themeVersion;
+		Image::createRectAlphaFilled(selecAlphaRec, rectElem, video_page->format, clBkgMenu, true);
 	}
 
     // Si cambio la seleccion: invalida la cache del elemento anterior y del nuevo
@@ -313,11 +312,11 @@ void ListMenu::draw(SDL_Surface *video_page, bool haveFocus){
 
         if (game->cache == NULL) {
             // Cache no existe -> renderizar
-			#ifdef _XBOX 
-			game->cache = Fonts::renderUtf8Solid(fontMenu, line.c_str(), lineTextColor);
-			#else
-			game->cache = Fonts::renderUtf8Blended(fontMenu, line.c_str(), lineTextColor);
-			#endif
+			if (!CfgLoader::configMain[cfg::smoothFonts].valueBool)
+				game->cache = Fonts::renderUtf8Solid(fontMenu, line.c_str(), lineTextColor);
+			else
+				game->cache = Fonts::renderUtf8Blended(fontMenu, line.c_str(), lineTextColor);
+			
 			//Huge speedup if the background is static
 			// 1. Crear superficie optimizada de 8 bits con Anti-aliasing
 			//game->cache = TTF_RenderUTF8_Shaded(fontMenu, line.c_str(), lineTextColor, Constant::colors[clBlack].sdlColor);
@@ -386,10 +385,8 @@ void ListMenu::drawNavBar(SDL_Surface *video_page, const SDL_Color& txtColor,
 	SDL_Rect rectNavPath = {this->getX(), this->marginY, this->getW() - 1, face_h};
 	
 	// --- 3. Regenerar superficie de texto si cambió ---
-	static int s_lastNavThemeVer = -1;
-    if (txtNav != lastTxtNav || s_lastNavThemeVer != Constant::themeVersion) {
+    if (txtNav != lastTxtNav) {
         lastTxtNav = txtNav;
-		s_lastNavThemeVer = Constant::themeVersion;
 
         const int prevStyle = TTF_GetFontStyle(fontMenu);
         TTF_SetFontStyle(fontMenu, TTF_STYLE_ITALIC | TTF_STYLE_BOLD);
@@ -398,15 +395,16 @@ void ListMenu::drawNavBar(SDL_Surface *video_page, const SDL_Color& txtColor,
 			SDL_FreeSurface(navPath);
 			navPath = NULL;
 		}
-#ifdef _XBOX
-        SDL_Surface *txtNavPath = Fonts::renderUtf8Solid  (fontMenu, txtNav.c_str(), Constant::colors[clBkgMenu].sdlColor);
-#else
-        SDL_Surface *txtNavPath = Fonts::renderUtf8Blended(fontMenu, txtNav.c_str(), Constant::colors[clBkgMenu].sdlColor);
-#endif
+		SDL_Surface *txtNavPath = NULL;
+		if (!CfgLoader::configMain[cfg::smoothFonts].valueBool)
+			txtNavPath = Fonts::renderUtf8Solid  (fontMenu, txtNav.c_str(), Constant::colors[clBkgMenu].sdlColor);
+		else
+			txtNavPath = Fonts::renderUtf8Blended(fontMenu, txtNav.c_str(), Constant::colors[clBkgMenu].sdlColor);
+
         TTF_SetFontStyle(fontMenu, prevStyle);
 
 		//Creamos una superficie transparente de color negro
-		Constant::createRectAlphaFilled(navPath, rectNavPath, video_page->format, clBG, true);
+		Image::createRectAlphaFilled(navPath, rectNavPath, video_page->format, clBG, true);
 
         if (!txtNavPath || !navPath) 
 			return;
@@ -476,6 +474,8 @@ int ListMenu::getCartForSystem(int systemid){
 			return cart_gg;
 		case 25:
 			return cart_neogeo_pocket;
+		case 26:
+			return cart_atari2600;
 		case 28:
 			return cart_atarilynx;
 		case 29:
@@ -505,8 +505,12 @@ int ListMenu::getCartForSystem(int systemid){
 			return cart_supergrafx;
 		case 113:
 			return cart_msx;
+		case 117:
+			return cart_msx2;
 		case 114:
 			return cart_pce_cd;
+		case 123: 
+			return cart_scummvm;
 		case 130:
 			return cart_cd32;
 		case 135:

@@ -1,8 +1,5 @@
 #pragma once
 
-#include <SDL.h>
-#include <SDL_ttf.h>
-#include <gfx/gfx_utils.h>
 #include <string>
 #include <sstream>
 #include <cctype> // Para isdigit
@@ -13,6 +10,10 @@
 #include <unordered_set>
 #include <stdarg.h>
 
+#include <SDL.h>
+#include <SDL_ttf.h>
+#include <gfx/gfx_utils.h>
+
 #include <utils/logger.h>
 #include <font/fonts.h>
 
@@ -21,8 +22,8 @@ static const int video_bpp = 16;
 /* Final layout:
  *   core 0  Xbox 360 Dashboard                 ┐
  *   core 1  (Salvia & retro_run) | dynarec PSX ┘ same physical core
- *   core 2  PSX GPU helper thread | Roland SC-55 midi ┐
- *   core 3  idle                                      ┘ same physical core
+ *   core 2  PSX GPU helper thread | Roland SC-55 / MT-32 midi ┐
+ *   core 3  idle                                              ┘ same physical core
  *   core 4  IO & HTTP & SDL Sound thread & Xaudio2 & SDL_SYS_CreateThread ┐
  *   core 5  Xaudio2 & SDL_SYS_CreateThread                                ┘ same physical core
  */
@@ -37,8 +38,11 @@ static int video_height = 720;
 	#include <xtl.h>
 	extern "C" {
 		void SDL_XBOX_SetBeaconInfo(int is_menu, int in_game);
-		void SDL_XBOX_SetPluginCommand(unsigned int cmd);
+		void SDL_XBOX_SetBeaconCmd(unsigned int cmd);
 		void SDL_XBOX_GetPluginStatus(unsigned int *plugin_ver, unsigned int *plugin_mode);
+		int  SDL_XBOX_IsT240Loaded(void);
+		void SDL_XBOX_SetCrtSuperResWidth(int super_w);
+		int  SDL_XBOX_GetCrtSuperResWidth(void);
 	}
 #elif defined(WIN)
 	//SDL_SWSURFACE | SDL_HWSURFACE | SDL_DOUBLEBUF | SDL_FULLSCREEN
@@ -143,6 +147,10 @@ struct Message {
 		ticks = 0;
 		timeout = 0;
 		content = "";
+		rect.x = 0;
+		rect.y = 0;
+		rect.w = 0;
+		rect.h = 0;
 	}
 };
 
@@ -345,6 +353,9 @@ typedef enum {
 		ico_reload,
 		ico_turbo,
 		ico_download,
+		ico_updater,
+		ico_menu_check,
+		ico_menu_error,
 		ico_input_dpad_u,
 		ico_input_dpad_d,
 		ico_input_dpad_l,
@@ -384,6 +395,7 @@ typedef enum {cart_gba,
 			  cart_neogeo_pocket,
 			  cart_zx,
 			  cart_msx,
+			  cart_msx2,
 			  cart_dos,
 			  cart_doom,
 			  cart_supergrafx,
@@ -394,12 +406,14 @@ typedef enum {cart_gba,
 			  cart_virtualboy,
 			  cart_atarilynx,
 			  cart_atari800,
+			  cart_atari2600,
 			  cart_atari5200,
 			  cart_c64,
 			  cart_x68k,
 			  cart_amiga,
 			  cart_cd32,
 			  cart_n64,
+			  cart_scummvm,
 			  max_carts};
 
 extern float aspectRatioValues[]; 
@@ -459,10 +473,19 @@ typedef enum {
 
 enum SYNC_TYPES{
 	SYNC_TO_AUDIO = 0,
-	SYNC_TO_VIDEO,          // limitador por reloj de CPU y vsync normal (como antes de 9f9f64bc)
-	SYNC_TO_VIDEO_ADAPT,    // pacer por vblanks + present inmediato si llega tarde (Sync::limit_fps)
-	SYNC_NONE,
-	SYNC_FAST_FORWARD       // no se guarda nunca: puede cambiar de valor
+	SYNC_TO_VIDEO,          // pacer por vblanks con vsync (ver io/sync.h)
+	SYNC_TO_VIDEO_ADAPT,    // lo mismo + present inmediato si el frame llega tarde
+	SYNC_NONE               // sin espera y sin vsync
+};
+
+/* Panel a 50 Hz para los juegos PAL (solo Xbox 360, ver io/refresco50.h).  Se
+ * persiste el indice: el orden tiene que coincidir con el de la opcion del
+ * menu de video. */
+enum REFRESH50_MODES{
+	REFRESH50_NO = 0,       // nunca
+	REFRESH50_AUTO,         // si el panel de control dice que la pantalla admite 50 Hz
+	REFRESH50_CONFIRM,      // siempre, y se mantiene solo si se confirma en 10 s
+	REFRESH50_MAX
 };
 
 /* SDL 1.2: Definir mascaras segun el orden de bytes del sistema */
@@ -494,8 +517,6 @@ class Constant{
         static volatile uint32_t totalTicks;
 
 		static svColor colors[clTotalColors];
-		static int themeVersion;
-		static void applyTheme(int themeIdx, SDL_Surface* fmtRef = NULL);
 
 		static std::string getAppDir(){ 
             return appDir; 
@@ -850,54 +871,6 @@ class Constant{
 			if (autoClose){
 				// Liberar el handle (el hilo continua su ejecucion de forma independiente)
 				CloseHandle(hThread);
-			}
-		}
-
-		static void createRectAlphaFilled(SDL_Surface*& selecAlphaRec, SDL_Rect& rectElem, SDL_PixelFormat* format, enumColors color, bool border = false){
-			bool drawWithAlfa = true;
-			#if defined(_XBOX)
-				drawWithAlfa = false;
-			#endif
-
-			if (selecAlphaRec == NULL){
-				SDL_Surface* rawSurface = SDL_CreateRGBSurface(SDL_SWSURFACE, rectElem.w, rectElem.h, 
-															   format->BitsPerPixel,
-															   format->Rmask, 
-															   format->Gmask, 
-															   format->Bmask, 
-															   format->Amask);
-
-				const Uint8 KEY_ALPHA = 180;
-				Uint8 fillColorAlpha = KEY_ALPHA;
-				#if !defined(_XBOX) && !defined(SALVIA_GPU_VIDEO)
-					Uint32 colorkey = SDL_MapRGB(rawSurface->format, 255, 0, 255);
-					SDL_FillRect(rawSurface, nullptr, colorkey);
-					SDL_SetColorKey(rawSurface, SDL_SRCCOLORKEY, colorkey);
-					fillColorAlpha = 0xFF;
-				#endif
-				
-				Uint32 keyBg = SDL_MapRGBA(rawSurface->format,
-                                            Constant::colors[color].sdlColor.r,
-                                            Constant::colors[color].sdlColor.g,
-                                            Constant::colors[color].sdlColor.b,
-                                            drawWithAlfa ? fillColorAlpha : 0xFF);
-
-				SDL_FillRect(rawSurface, NULL, keyBg);
-				
-				if (border && drawWithAlfa)
-					rect(rawSurface, 0, 0, rectElem.w - 1, rectElem.h - 1, Constant::colors[color].sdlColor);
-
-				#if defined(_XBOX)
-					//En xbox es demasiado intensivo dibujar transparencias
-					SDL_SetAlpha(rawSurface, SDL_RLEACCEL, 0xFF);
-					selecAlphaRec = rawSurface;
-				#elif defined(SALVIA_GPU_VIDEO)
-					selecAlphaRec = rawSurface;
-				#else 
-						SDL_SetAlpha(rawSurface, SDL_SRCALPHA, KEY_ALPHA);
-						selecAlphaRec = SDL_DisplayFormatAlpha(rawSurface);
-						SDL_FreeSurface(rawSurface);
-				#endif
 			}
 		}
 

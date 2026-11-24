@@ -1,9 +1,3 @@
-/*
- * 240p Dream & t240.xex (v2.22)
- * Desarrollado por: tupapa2712
- * "Por más que otros se basen en la lógica, los datos, la verdad y el conocimiento, yo sigo creyendo en mi mismo"
- */
-
 #include <engine.h>
 #include <io/joystick.h>
 #include <io/keyboard.h>
@@ -20,8 +14,6 @@
 	#pragma comment(lib, "winmm.lib") // Necesario para timeBeginPeriod
 #endif
 
-extern std::string g_peekedLaunchRom;
-
 Engine::Engine(){
 }
 
@@ -35,7 +27,7 @@ int Engine::initEngine(CfgLoader* cfgLoader){
 
 	#ifdef WIN
 		// 1. Activar la precision de 1ms en el reloj de Windows.
-		// El limitador de frames (Sync::limit_fps) duerme el grueso de la espera
+		// El limitador por reloj de CPU (Sync::esperaCpu) duerme el grueso de la espera
 		// con SDL_Delay y solo clava el instante final con espera activa; con la
 		// granularidad por defecto (15.6 ms) el sleep se pasaria y el limitador
 		// tendria que gastar en espera activa TODO el frame.  No dependemos de
@@ -57,57 +49,29 @@ int Engine::initEngine(CfgLoader* cfgLoader){
 		//XSetThreadProcessor(currrentThread, CPU_THREAD);
 
 		if (_stricmp(Constant::getAppExecutable().c_str(), "default.xex") == 0) {
-			/* El menu principal de 240p Dream siempre arranca en 640x480 (480i legible) */
+			/* 240p Dream: menu principal siempre en 640x480 (480i legible) */
 			video_width = 640;
 			video_height = 480;
+			SDL_XBOX_SetCrtSuperResWidth(640);
 			SDL_XBOX_SetBeaconInfo(1, 0);
 		} else {
-			/* Los juegos de 240p Dream arrancan exclusivamente en 240p nativo o super-res.
-			 * Precedencia: Por juego (.opt) > Por sistema (config/<emu>.cfg) > Global (salvia.cfg). */
-			DWORD dwLaunchDataSize = 0;
-			if (g_peekedLaunchRom.empty() &&
-			    XGetLaunchDataSize(&dwLaunchDataSize) == ERROR_SUCCESS &&
-			    dwLaunchDataSize > 0) {
-				BYTE *pLaunchData = new BYTE[dwLaunchDataSize];
-				if (XGetLaunchData(pLaunchData, dwLaunchDataSize) == ERROR_SUCCESS) {
-					g_peekedLaunchRom = (const char *)pLaunchData;
-				}
-				delete[] pLaunchData;
-			}
-
-			video_width = cfgLoader->configMain[cfg::resolution_width].valueInt;
-			video_height = cfgLoader->configMain[cfg::resolution_height].valueInt;
-
-			ConfigEmu *sysEmu = cfgLoader->emulators.empty() ? NULL : cfgLoader->getCfgEmu();
-			if (!sysEmu || sysEmu->executable.find(Constant::getAppExecutable()) == std::string::npos) {
-				sysEmu = cfgLoader->findCfgEmu(Constant::getAppExecutable());
-			}
-			if (sysEmu && sysEmu->crtResolution > 0) {
-				CfgLoader::resolveCrtOverride(sysEmu->crtResolution, video_width, video_height);
-			}
-			if (!g_peekedLaunchRom.empty() &&
-			    g_peekedLaunchRom != START_FROM_EXCEPTION &&
-			    g_peekedLaunchRom != BIOS_ONLY) {
-				const int gameRes = cfgLoader->readGameCrtResolution(g_peekedLaunchRom);
-				if (gameRes > 0) {
-					CfgLoader::resolveCrtOverride(gameRes, video_width, video_height);
+			/* 240p Dream: TODOS los nucleos (incluidos mgba, bluemsx, stella2014, scummvm)
+			 * salen siempre en backbuffer fisico 640x240 (100% compatible con t240.xex sin cambios),
+			 * aplicando la resolucion horizontal D3D elegida (640/1280/1920/2560/256/320 x 240). */
+			static const int kSuperResWidths[6] = { 640, 1280, 1920, 2560, 256, 320 };
+			int srIdx = cfgLoader->configMain[cfg::crtSuperRes].valueInt;
+			std::map<std::string, std::unique_ptr<cfg::t_emu_props> >::iterator itCoreRes =
+				cfgLoader->startupLibretroParams.find("dream_crt_super_res");
+			if (itCoreRes != cfgLoader->startupLibretroParams.end() && itCoreRes->second.get() != NULL) {
+				int coreRes = itCoreRes->second->selected;
+				if (coreRes >= 1 && coreRes <= 6) {
+					srIdx = coreRes - 1;
 				}
 			}
-
-			if (video_height != 240 ||
-			   (video_width != 320 && video_width != 640 && video_width != 1280 && video_width != 1920)) {
-				video_width = 1280;
-				video_height = 240;
-			}
-			/* Nucleos SNES y NES (256px / 512px hi-res): usar minimo 640x240 para rellenar
-			 * 100% horizontal 4:3 con Sharp-Bilinear en X + Point 1:1 en Y sin barras
-			 * laterales ni shimmering, conservando src_w <= 640 para t240.xex. */
-			if ((_stricmp(Constant::getAppExecutable().c_str(), "Snes9x2010.xex") == 0 ||
-			     _stricmp(Constant::getAppExecutable().c_str(), "Snes9x.xex") == 0 ||
-			     _stricmp(Constant::getAppExecutable().c_str(), "Nestopia.xex") == 0) &&
-			    video_height == 240 && video_width < 640) {
-				video_width = 640;
-			}
+			if (srIdx < 0 || srIdx >= 6) srIdx = 3;
+			video_width = 640;
+			video_height = 240;
+			SDL_XBOX_SetCrtSuperResWidth(kSuperResWidths[srIdx]);
 			SDL_XBOX_SetBeaconInfo(0, 1);
 		}
 		SDL_XBOX_SetScreenResolution(video_width, video_height);
@@ -225,15 +189,14 @@ int Engine::initEngine(CfgLoader* cfgLoader){
 	//Actualizar overscan en windows y xbox
 	SDL_XBOX_SetOverscan(cfgLoader->configMain[cfg::overscan_x].valueInt, cfgLoader->configMain[cfg::overscan_y].valueInt);
 	SDL_WM_SetCaption("240p Dream", NULL);
-	initFont();
+	initFont(cfgLoader->configMain[cfg::mainLang].valueStr);
 	joystick = new Joystick();
 	keyb = new t_keyboard();
 
-	int syncMode;
-	cfgLoader->configMain[cfg::syncMode].getPropValue(syncMode);
-	sync = new Sync(syncMode);
+	// Sync lee la sincronizacion efectiva de la configuracion en cada frame
+	// (override del core, menu) y corrige el ritmo del remuestreador de audio.
+	sync = new Sync(&cfgLoader->current_video_settings.sync_type, &g_audioRate);
 
-	Constant::applyTheme(cfgLoader->configMain[cfg::uiTheme].valueInt, overlay);
 	initColors(overlay);
 	return 0;
 }
@@ -270,11 +233,14 @@ void Engine::stopEngine(){
 	SDL_CloseAudio();
 }
 
-int Engine::initFont(){
+int Engine::initFont(const std::string& lang){
 	fonts = new Fonts();
 	//Establecemos 720 como la resolucion estandar, y en base a ella, escalamos la fuente
 	//dependiendo de la resolucion de la pantalla
-	fonts->initFonts((int)(BASE_FONT_HEIGHT * video_height / (float)720));
+	// Fuente de reserva para chino, japones y coreano, segun el idioma del menu
+	const std::string cjkFont = Constant::getAppDir() + "\\assets\\fonts\\" + Fonts::cjkFontFile(lang);
+	// Con el menu en chino, japones o coreano la fuente CJK se carga en memoria
+	fonts->initFonts((int)(BASE_FONT_HEIGHT * video_height / (float)720), cjkFont, Fonts::isCjkLang(lang));
 	return 0;
 }
 

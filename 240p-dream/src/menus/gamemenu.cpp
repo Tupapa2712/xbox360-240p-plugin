@@ -14,6 +14,7 @@
 #include "unzip/unziptool.h"
 #include "rhash/md5.h" // To generate a filename hash
 #include <video/shaderpreset.h>
+#include <io/progress_bar.h>
 
 /* Definida en salvia.cpp devuelve los descriptores de memoria que el core
  * envio via RETRO_ENVIRONMENT_SET_MEMORY_MAPS (ej. HRAM en Game Boy). */
@@ -76,6 +77,7 @@ GameMenu::GameMenu(CfgLoader *cfgLoader) : m_csInited(false)
 	if (!joystick->init_all_joysticks()){
 		configButtonsJOY();
 	}
+	joystick->loadRetroJoyIni();
 
 	configMenus = new GestorMenus(overlay->w, overlay->h);
 	configMenus->inicializar(cfgLoader, joystick);
@@ -89,7 +91,6 @@ GameMenu::GameMenu(CfgLoader *cfgLoader) : m_csInited(false)
 	this->current_integer_scale_type = &getCfgLoader()->configMain[cfg::scaleIntMode].getIntRef();
 	this->current_shader = &getCfgLoader()->configMain[cfg::shaderMode].getIntRef();
 	this->mustUpdateFps = &getCfgLoader()->configMain[cfg::showFps].getBoolRef();
-	this->current_fast_forward = false;
 	processConfigChanges();
 
 	if (cfgLoader->appliedFileParmsCore.empty()){
@@ -987,7 +988,7 @@ void GameMenu::drawFilters(ListMenu &listMenu){
 		if (filterAlphaRec != NULL){
 			SDL_FreeSurface(filterAlphaRec);
 		}
-		Constant::createRectAlphaFilled(filterAlphaRec, rectElem, overlay->format, clBkgMenu, true);
+		Image::createRectAlphaFilled(filterAlphaRec, rectElem, overlay->format, clBkgMenu, true);
 	}
 
 	JFY_TYPE justifyCenter(JFY_CENTER, w);
@@ -1008,7 +1009,7 @@ void GameMenu::drawFilters(ListMenu &listMenu){
 			lineTextColor = white;
 		}
 
-		SDL_Rect dimLeft = Fonts::drawTextTransparent(overlay, fontbig, opciones[i]->titulo.c_str(), x, y + i * (face_h_big + 3), lineTextColor, 0);
+		SDL_Rect dimLeft = Fonts::drawTextTransparent(overlay, fontbig, opciones[i]->titulo.getStr().c_str(), x, y + i * (face_h_big + 3), lineTextColor, 0);
 		const int leftTxtDim = dimLeft.w + 3;
 		JFY_TYPE justifyHelper(JFY_RIGHT, w - leftTxtDim);
 
@@ -1348,7 +1349,7 @@ FILE_STATUS GameMenu::listableZip(ListMenu &listMenu, FILE_NAVIGATION nav){
 			if (ret != FS_ZIP_FILE_EXTRACTED){
 				//Error Extract the file trying to remove some special characters
 				LOG_ERROR("Error extracting %s Trying to delete special chars...", extractionPath.c_str());
-				extractionPath = Constant::getTmpDir() + Constant::getFileSep() + Constant::checkPath(internalPath);
+				extractionPath = Constant::getTmpDir() + Constant::getFileSep() + dir.getFileName(Constant::checkPath(internalPath));
 				ret = extractFileFromZip(internalPath, extractionPath, zb, listMenu);
 			}
 
@@ -1513,7 +1514,7 @@ bool GameMenu::updateFps(){
         // Temporizadores independientes
         shouldUpdateFps = (currentTick - lastFpsUpdate > 500) || fpsSurface == NULL;
 		//const bool shouldUpdateFps = (currentTick - lastFpsUpdate > 500);
-        const bool shouldUpdateMem = (currentTick - lastMemUpdate > 500) || memSurface == NULL;
+        const bool shouldUpdateMem = (currentTick - lastMemUpdate > 5000) || memSurface == NULL;
 		int lastCpuW = 0;
 
         // 1. Actualizacion de contadores internos
@@ -1572,19 +1573,12 @@ bool GameMenu::updateFps(){
 			totalPercent = ms.dwMemoryLoad;
 #endif
 			char memText[64];
-#ifdef _XBOX
-			int outW = 0, outH = 0;
-			SDL_XBOX_GetScreenResolution(&outW, &outH);
-			char scanMode = (outH > 0 && outH <= 256) ? 'p' : 'i';
-			_snprintf(memText, sizeof(memText), "RES: %dx%d%c | MEM: %.0f%%", outW, outH, scanMode, totalPercent);
-#else
 			// Usamos double para mayor precision en los calculos de GB
 			if (availMB >= 1024.0) {
 				sprintf(memText, "MEM: %.0f%% (%.2fGB Free)", totalPercent, availMB / 1024.0);
 			} else {
 				sprintf(memText, "MEM: %.0f%% (%.0fMB Free)", totalPercent, availMB);
 			}
-#endif
 
 			memSurface = Fonts::renderUtf8Shaded(font, memText, Constant::colors[clWhite].sdlColor, Constant::colors[clBlack].sdlColor);
 			lastMemUpdate = currentTick;
@@ -1624,22 +1618,31 @@ void GameMenu::processFrontendEvents(HOTKEYS_LIST hotkey){
 			showSystemMessage(msg, 3000);
 	}
 
+	/* Lo que publica el hilo de guardado, copiado con el mutex: el hilo escribe
+	 * esos std::string desde otro hilo y leerlos sin el (como se hacia con
+	 * savingMessage en cada frame) es una carrera que puede corromperlos.  Se
+	 * copia dentro y se usa fuera, para no tener el mutex mientras se pinta. */
+	std::string toast, guardando;
+	float progresoGuardado;
+	bool capturaGuardada;
+	SDL_mutexP(statesSram.saveContext.g_saveQueue.saveMutex);
+	toast.swap(statesSram.saveContext.g_saveQueue.toastMessage);   //se la lleva y la deja vacia
+	capturaGuardada  = statesSram.saveContext.g_saveQueue.screenshotSaved;
+	statesSram.saveContext.g_saveQueue.screenshotSaved = false;
+	guardando        = statesSram.saveContext.g_saveQueue.savingMessage;
+	progresoGuardado = statesSram.saveContext.g_saveQueue.savingProgress;
+	SDL_mutexV(statesSram.saveContext.g_saveQueue.saveMutex);
+
 	//Second, check if there is some save message from the thread
-	if (!statesSram.saveContext.g_saveQueue.toastMessage.empty()){
-		SDL_mutexP(statesSram.saveContext.g_saveQueue.saveMutex);
-		showSystemMessage(statesSram.saveContext.g_saveQueue.toastMessage, 3000);
-		statesSram.saveContext.g_saveQueue.toastMessage = "";
-		SDL_mutexV(statesSram.saveContext.g_saveQueue.saveMutex);
-	}
+	if (!toast.empty())
+		showSystemMessage(toast, 3000);
 
 	//Thirdly, check if there is an screenshot saved
-	if (statesSram.saveContext.g_saveQueue.screenshotSaved){
+	if (capturaGuardada)
 		configMenus->poblarPartidasGuardadas(getCfgLoader(), romPaths.rompath);
-		statesSram.saveContext.g_saveQueue.screenshotSaved = false;
-	}
-	
+
 	//Finaly, show a savestate progress message
-	showProgressMessage(statesSram.saveContext.g_saveQueue.savingMessage, statesSram.saveContext.g_saveQueue.savingProgress, 3000);
+	showProgressMessage(guardando, progresoGuardado, 3000);
 
 	// Procesamos hotkeys
 	processHotkeys(hotkey);
@@ -1681,7 +1684,6 @@ void GameMenu::processHotkeys(HOTKEYS_LIST hotkey){
 
 	std::string msgShader;
 	ConfigEmu *emu = getCfgLoader()->getCfgEmu();
-	static int lastSync = SYNC_TO_VIDEO;
 
 	std::string msg;
 
@@ -1694,8 +1696,44 @@ void GameMenu::processHotkeys(HOTKEYS_LIST hotkey){
 
 		case HK_SHADER:
 			#ifdef SALVIA_GPU_VIDEO
-			/* 240p Dream: todos los filtros de suavizado estan deshabilitados (solo 00-nearest). */
-			*this->current_shader = 0;
+			{
+				/* La lista de shaders es dinamica (assets\shaders): el tope del
+				 * ciclado sale del registro, no de una constante.
+				 *
+				 * La hotkey cicla el ajuste EFECTIVO, con la MISMA precedencia
+				 * que checkDisplayOptions: si el core tiene un override, mueve
+				 * el override; si esta en Auto, mueve el shader global. Antes
+				 * escribia siempre en el global y aplicaba sin mirar el
+				 * override, asi que en un core con override los dos caminos se
+				 * contradecian: la hotkey cambiaba la pantalla pero el menu
+				 * general no, porque checkDisplayOptions seguia resolviendo al
+				 * override. */
+				ShaderRegistry* shaders = ShaderRegistry::instance();
+				int totalShaders = shaders->count();
+				if (totalShaders > 0){
+					ConfigEmu* cfgEmu = getCfgLoader()->getCfgEmu();
+					int next;
+
+					if (cfgEmu != NULL && cfgEmu->shaderMode > 0){
+						/* Override activo: el 0 del menu de overrides es "Auto",
+						 * de ahi el +1 al guardarlo. */
+						next = (cfgEmu->shaderMode - 1 + 1) % totalShaders;
+						cfgEmu->shaderMode = next + 1;
+					} else {
+						*this->current_shader = (*this->current_shader + 1) % totalShaders;
+						next = *this->current_shader;
+					}
+
+					XBOX_SelectEffect(next);
+					/* Mantener sincronizado el ultimo valor aplicado: si no,
+					 * checkDisplayOptions creeria que sigue el anterior. */
+					cfgLoader->current_video_settings.filter = next;
+
+					msgShader = LanguageManager::instance()->get("msg.filter") + " "
+						+ shaders->displayName(next);
+					showSystemMessage(msgShader, 3000);
+				}
+			}
 			#else
 				do {
 					*this->current_scaler_mode = ((*this->current_scaler_mode + 1) % TOTAL_VIDEO_SCALE);
@@ -1755,6 +1793,8 @@ void GameMenu::processHotkeys(HOTKEYS_LIST hotkey){
 			}
 			bg_screenshot = clonarPantalla(gameScreen, 180);
 			fillOverlay(clBackground);
+			//fillOverlay(clBlack);
+			//clearOverlay();
 			setEmuStatus(EMU_MENU);
 			break;
 		case HK_VIEW_MENU:
@@ -1802,26 +1842,14 @@ void GameMenu::processHotkeys(HOTKEYS_LIST hotkey){
 					showLangSystemMessage("msg.fastfoward.speed.wrong", 3000);
 					break;
 				}
-				const float originalFps = (float)getAvInfo().timing.fps;
-				current_fast_forward = !current_fast_forward;
-				/* Por Sync y no con SDL_XBOX_SetVSync directo: el vsync tiene
-				 * ahora un segundo dueno (el adaptativo de limit_fps) y dos
-				 * duenos del mismo bit se pelean -el adaptativo lo volveria a
-				 * encender a mitad de un avance rapido-.  Mientras el avance
-				 * rapido lo tenga tomado, el adaptativo queda inerte. */
-				sync->set_vsync_permitido(!current_fast_forward);
-				if (current_fast_forward){
-					sync->init_fps_counter(originalFps * speed);
-					/* Sobre la sincronizacion en uso (la que puso el override
-					 * del core o el menu), no sobre la opcion general: asi no
-					 * se guarda en la configuracion y al salir vuelve la que
-					 * habia. */
-					lastSync = cfgLoader->current_video_settings.sync_type;
-					cfgLoader->current_video_settings.sync_type = SYNC_TO_VIDEO;
+				/* El avance rapido es de Sync: mismo reloj de vblanks con varios
+				 * frames por cada uno que se presenta, sin tocar la sincronizacion
+				 * elegida, que vuelve sola al salir. */
+				if (!sync->isFastForward()){
+					sync->setFastForward(true, speed);
 					showSystemMessage(Constant::string_format(LanguageManager::instance()->get("msg.fastfoward.speed"), speed * 100), 3000);
 				} else {
-					sync->init_fps_counter(originalFps);
-					cfgLoader->current_video_settings.sync_type = lastSync;
+					sync->setFastForward(false, 1.0f);
 					showLangSystemMessage("msg.fastfoward.reset", 3000);
 				}
 			} else {
@@ -1879,9 +1907,15 @@ void GameMenu::exitCoreToFrontend(){
 		if (romLoaded && !romPaths.sram.empty()){
 			statesSram.saveSram(romPaths.sram.c_str());
 		}
+		for (DWORD p = 0; p < 4; p++) {
+			XINPUT_VIBRATION vib;
+			vib.wLeftMotorSpeed = 0;
+			vib.wRightMotorSpeed = 0;
+			XInputSetState(p, &vib);
+		}
 		SDL_PauseAudio(1);
 		SDL_XBOX_SetBeaconInfo(1, 0);
-		SDL_XBOX_SetPluginCommand(2); /* Restaurar 480i antes de volver al menu */
+		SDL_XBOX_SetBeaconCmd(2); /* DREAM_CMD_480I: restaurar 480i antes de volver al menu */
 		SDL_Delay(150);
 		Launcher launcher;
 		if (launcher.launchXboxWin("game:\\default.xex", "") == 0){
@@ -2125,15 +2159,43 @@ void GameMenu::showSystemMessage(std::string text, uint32_t duration) {
     msg.ticks = SDL_GetTicks();
     
     std::string newText = Fonts::recortarAlTamanyo(text, this->overlay->w);
-	msg.cache = Fonts::renderUtf8Blended(Fonts::getFont(Fonts::FONTBIG), newText.c_str(), Constant::colors[clWhite].sdlColor);
+	SDL_Surface *line = Fonts::renderUtf8Blended(Fonts::getFont(Fonts::FONTBIG), newText.c_str(), Constant::colors[clWhite].sdlColor);
+
+	if (line == NULL)
+		return;
+
+	const int gap = 4;
+	msg.cache = SDL_CreateRGBSurface(SDL_SWSURFACE, line->w + gap, line->h + gap, 
+															overlay->format->BitsPerPixel,
+															overlay->format->Rmask, 
+															overlay->format->Gmask, 
+															overlay->format->Bmask, 
+															overlay->format->Amask);
+	if (!CfgLoader::configMain[cfg::smoothFonts].valueBool)
+		SDL_FillRect(msg.cache, NULL, Constant::colors[clPaleBlue].color);
+	else {
+		roundedBoxRGBA(msg.cache, 0, 0, msg.cache->w, msg.cache->h, 4, 
+			Constant::colors[clPaleBlue].sdlColor.r,
+			Constant::colors[clPaleBlue].sdlColor.g,
+			Constant::colors[clPaleBlue].sdlColor.b,
+			0xC0);
+	}
     
     if (msg.cache) {
-        msg.rect.x = 0;
+        msg.rect.x = 5;
         // La posicion Y se calculara dinamicamente al dibujar para que se apilen
-        msg.rect.w = msg.cache->w + 2;
-        msg.rect.h = face_h_big + 4;
+        msg.rect.w = msg.cache->w + gap;
+        msg.rect.h = face_h_big + gap;
+		if (!CfgLoader::configMain[cfg::smoothFonts].valueBool){
+			SDL_Rect rect = {gap / 2, gap / 2, 0, 0};
+			SDL_BlitSurface(line, NULL, msg.cache, &rect);
+		} else {
+			Image::blendSurfaceOver(line, msg.cache, gap / 2, gap / 2);
+		}
+		SDL_SetAlpha(msg.cache, SDL_RLEACCEL, 0xFF);
         messages.push_back(msg);
     }
+	SDL_FreeSurface(line);
 }
 
 void GameMenu::showProgressMessage(std::string text, float progress, uint32_t duration){
@@ -2277,8 +2339,6 @@ inline void GameMenu::handleMessageQueue(uint32_t currentTicks) {
 void GameMenu::clearLastAchievementArea() {
     // Solo limpiamos si el area tiene dimensiones validas
 	if (achievement_surface.lastPos.w > 0 && achievement_surface.lastPos.h > 0) {
-        // Pintamos un rectungulo del color de fondo (uBkgColor) 
-        // sobre el area que ocupaba el ultimo logro
 		clearOverlayRect(achievement_surface.lastPos);
     }
 
@@ -2332,7 +2392,7 @@ void GameMenu::showAchievementMessage(const std::string &line1Str, const std::st
 		//Limpiamos el espacio ocupado por la superficie anterior
 		clearLastAchievementArea();
 		achievement_surface.lastPos = achievement_surface.pos;
-		//La creamos de nuevo
+		//La creamos de nuevo (superficie intermedia para blits posteriores)
 		achievement_surface.srf = SDL_CreateRGBSurface(SDL_SWSURFACE, achievement_surface.pos.w, achievement_surface.pos.h, 
 															overlay->format->BitsPerPixel,
 															overlay->format->Rmask, 
@@ -2343,28 +2403,35 @@ void GameMenu::showAchievementMessage(const std::string &line1Str, const std::st
 		if (achievement_surface.srf == NULL)
 			return;
 
-		SDL_FillRect(achievement_surface.srf, NULL, Constant::colors[clPaleBlue].color);
-		SDL_SetAlpha(achievement_surface.srf, SDL_RLEACCEL, 0xFF);
+		// Fondo semitransparente: el alpha va escrito en los propios píxeles.
+		// El overlay es una textura ARGB que D3D compone sobre el juego usando
+		// su canal alpha (D3DBLEND_SRCALPHA/INVSRCALPHA), así que un píxel con
+		// alpha 0xC0 se ve al ~75 % de opacidad sobre el juego.
+		Uint32 bkg = SDL_MapRGBA(achievement_surface.srf->format,
+								 Constant::colors[clPaleBlue].sdlColor.r,
+								 Constant::colors[clPaleBlue].sdlColor.g,
+								 Constant::colors[clPaleBlue].sdlColor.b,
+								 0xC0);   // 0xC0 ≈ 75 % opaco
+		SDL_FillRect(achievement_surface.srf, NULL, bkg);
 
-		SDL_Rect txtRect = {badgeW + badgePad * 2, 0, line1->w, line_height};
-		SDL_BlitSurface(line1, NULL, achievement_surface.srf, &txtRect);
-
-		txtRect.y = line_height;
-		txtRect.w = line2->w;
-		SDL_BlitSurface(line2, NULL, achievement_surface.srf, &txtRect);
-
-		txtRect.y = line_height * 2;
-		txtRect.w = line3->w;
-		SDL_BlitSurface(line3, NULL, achievement_surface.srf, &txtRect);
+		/* Mezclamos texto y badge nosotros mismos para que queden opacos:
+		 * SDL_BlitSurface conservaria el alfa 0xC0 del fondo. */
+		Image::blendSurfaceOver(line1, achievement_surface.srf, badgeW + badgePad * 2, 0);
+		Image::blendSurfaceOver(line2, achievement_surface.srf, badgeW + badgePad * 2, line_height);
+		Image::blendSurfaceOver(line3, achievement_surface.srf, badgeW + badgePad * 2, line_height * 2);
 	
 		SDL_FreeSurface(line1);
 		SDL_FreeSurface(line2);
 		SDL_FreeSurface(line3);
 
 		if (badge != NULL){
-			SDL_Rect rectBadge = {badgePad, badgePad, 0, 0};
-			SDL_BlitSurface(badge, NULL, achievement_surface.srf, &rectBadge);
+			Image::blendSurfaceOver(badge, achievement_surface.srf, badgePad, badgePad);
 		}
+
+		// Copia directa (sin SDL_SRCALPHA): el blit debe copiar también el canal
+		// alpha de la superficie al overlay. Si se usara blending, SDL compondría
+		// contra el overlay (que está a alpha 0) y el cartel quedaría invisible.
+		SDL_SetAlpha(achievement_surface.srf, SDL_RLEACCEL, 0xFF);
 	}
 
 	if (achievement_surface.srf != NULL){
@@ -2406,27 +2473,16 @@ void GameMenu::processMessages() {
 
     if (messages.empty()) return;
 
-    // 3. CALCULO DE POSICIONES Y DIBUJO
-    static int line_height = face_h_big + MSG_GAP_Y;
-    int currentY = this->overlay->h - line_height;
-
+	const int gapY = 3;
     // Usamos referencia directa en el bucle para mayor seguridad que el puntero mData
     for (int i = (int)messages.size() - 1; i >= 0; --i) {
         Message &m = messages[i];
-        
-        // Actualizamos la nueva posicion
-        m.rect.x = 0;
-        m.rect.y = (Sint16)currentY;
-
         if (m.cache) {
-            m.rect.w = (Uint16)m.cache->w;
-            m.rect.h = (Uint16)m.cache->h;
-            
-            // Dibujamos fondo y texto
-            SDL_FillRect(overlay, &m.rect, Constant::colors[clBackground].color);
+			//Calculo de la coordenada y para que se apilen los mensajes
+			m.rect.y = this->overlay->h - (m.rect.h + gapY) * (i + 1);
+            // Dibujamos texto
             SDL_BlitSurface(m.cache, NULL, this->overlay, &m.rect);
         }
-        currentY -= line_height;
     }
 }
 
@@ -2461,22 +2517,7 @@ void GameMenu::setRomPaths(std::string rp){
 	romPaths.cht = cheatsDir + Constant::getFileSep() + dir.getFileNameNoExt(rp) + ".cht";
 
 	//Loading the joystick configuration if exists
-	std::string ruta = dir.getFolder(rp) + Constant::getFileSep() + dir.getFileNameNoExt(rp) + CFG_JOY_EXT;
-
-	std::string coreDefaultsPath = Constant::getAppDir() + std::string(Constant::tempFileSep) + "config"
-		+ std::string(Constant::tempFileSep) + PREFIX_DEFAULTS + coreName + CFG_JOY_EXT;
-
-	if (dir.fileExists(ruta.c_str())){
-		//Primero comprobamos si existe el fichero de configuracion del joystick en la ruta del juego
-		joystick->loadButtonsRetro(ruta);
-	} else if (dir.fileExists(coreDefaultsPath.c_str())){
-		//Comprobamos si existe en la ruta de configuracion del core
-		joystick->loadButtonsRetro(coreDefaultsPath);
-	} else {
-		//Finalmente y en ultima instancia, comprobamos si existe en la ruta del .ini y lo cargamos
-		std::string rutaIni = Constant::getAppDir() + Constant::getFileSep() + RETROPAD_INI;
-		joystick->loadButtonsRetro(rutaIni);
-	}
+ 	this->joystick->loadRetroJoyIni();
 }
 
 std::string GameMenu::getSramPath(){
@@ -2955,9 +2996,9 @@ void GameMenu::checkDisplayOptions(){
 	const auto &cfgEmu = getCfgLoader()->getCfgEmu();
 
 	#ifdef SALVIA_GPU_VIDEO
-	// 240p Dream CRT puro: forzar passthrough 00-nearest (D3DTEXF_POINT), sin filtros
-	const int currentShader = 0;
-	*this->current_shader = 0;
+	// Overriding the shader mode if the core has specified something greater than 0. 
+	// 0 is actually -1 in the cfg file which represents "Auto"
+	const int currentShader = cfgEmu->shaderMode > 0 ? cfgEmu->shaderMode - 1 : *this->current_shader;
 	if (cfgLoader->current_video_settings.filter != currentShader){
 		XBOX_SelectEffect(currentShader);
 		cfgLoader->current_video_settings.filter = currentShader;
@@ -2990,4 +3031,46 @@ void GameMenu::checkDisplayOptions(){
 		#endif
 		cfgLoader->current_video_settings.ratio = currentRatio;
 	}
+}
+
+void GameMenu::drawLoadingProgressBar(SDL_Surface*& screen, float progress) {
+	if (!screen) return;
+
+	// Configuración de dimensiones
+	const int face_h_big = Fonts::getLineSkip(Fonts::FONTBIG);
+	const int barW = screen->w / 2;
+	const int barH = 20;
+	const int barX = (screen->w - barW) / 2;
+	const int barY = (screen->h / 2) + 1; // Debajo del texto de "Loading..."
+
+	//Dibujar fondo de la barra
+	SDL_Rect bgRect = { (Sint16)barX, (Sint16)barY, (Uint16)barW, (Uint16)barH };
+	//Actualizamos el area de la barra y el area del texto para que se puedan ver
+	SDL_Rect bgRectFill = { bgRect.x, bgRect.y, bgRect.w, barH * 5};
+	SDL_FillRect(screen, &bgRectFill, Constant::colors[clBackground].color);
+	//Mostramos el fondo de la barra
+	SDL_FillRect(screen, &bgRect, Constant::colors[clBG].color);
+
+	//Dibujar el progreso real
+	if (progress > 1.0f) progress = 1.0f;
+	int fillW = (int)(barW * progress);
+	if (fillW > 0) {
+		SDL_Rect fillRect = { (Sint16)barX, (Sint16)barY, (Uint16)fillW, (Uint16)(barH / 2.0) };
+		SDL_FillRect(screen, &fillRect, Constant::colors[clBkgMenuLighter].color);
+		fillRect.y += (Uint16)(barH / 2);
+		SDL_FillRect(screen, &fillRect, Constant::colors[clBkgMenu].color);
+	}
+
+	const int txtW = 40;
+	SDL_Rect percentRect = { barX + barW / 2 - txtW, barY + barH, 80, barH * 4 };
+	percentRect.x += txtW;
+	percentRect.y += 15;
+	PB_drawPercent(screen, (int)(progress * 100.0), percentRect.x, percentRect.y, 3, PBUtil::rgb(screen, 100, 210, 255));
+
+	//Dibujar borde (opcional, 1px)
+	//SDL_FillRect no tiene "drawRect" vacío, así que usamos 4 líneas si quieres borde fino
+	//Actualizar solo la región de la barra para ganar rendimiento
+	//SDL_UpdateRect(screen, barX, barY, barW, 3*barH);
+	SDL_FillRect(gameScreen, NULL, Constant::colors[clBackground].color);
+	salviaFlip(gameScreen);
 }

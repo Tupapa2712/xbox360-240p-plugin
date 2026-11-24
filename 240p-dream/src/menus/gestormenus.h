@@ -9,13 +9,15 @@
 #include <http/badgedownloader.h>
 #include <const/cfgconst.h>
 #include <http/gamefaqs.h>
+#include <io/crccache.h>
 
 #include <iostream>
 #include <vector>
 #include <string>
 
+
 // --- Definicion de tipos de opciones ---
-enum TipoOpcion { OPC_BOOLEANA, OPC_LISTA, OPC_LISTA_REF, OPC_SUBMENU, OPC_INT, OPC_KEY, OPC_EXEC, OPC_SHOW_TXT, OPC_SHOW_TXT_VAL, OPC_SHOW_DYNTXT_VAL, OPC_SAVESTATE, OPC_ACHIEVEMENT, 
+enum TipoOpcion { OPC_BOOLEANA, OPC_LISTA, OPC_LISTA_REF, OPC_SUBMENU, OPC_INT, OPC_KEY, OPC_EXEC, OPC_SHOW_TXT, OPC_SHOW_TXT_VAL, OPC_SHOW_DYNTXT_VAL, OPC_SHOW_DYNTXT_PROG_VAL, OPC_SAVESTATE, OPC_ACHIEVEMENT, 
 	OPC_FAQ_SEARCH, OPC_FAQ_SELECT, OPC_FAQ_TXT, OPC_SHOW_IMG, OPC_UNDEFINED};
 
 /* KEY_JOY_ANALOG: la opcion apunta a una DIRECCION ANALOGICA del core, no a un
@@ -76,14 +78,18 @@ typedef std::string (*CallbackValues)(void* instance, void* index, void* values)
 // Clase Base para las opciones del menu
 class Opcion {
 public:
-    std::string titulo;
+    t_lockingStr titulo;
     TipoOpcion tipo;
 	int icon;
 	bool editable;
 	bool visible;
 
-    Opcion(std::string t, TipoOpcion tp) : titulo(t), tipo(tp), icon(-1), editable(false), visible(true) {}
-	Opcion(std::string t, TipoOpcion tp, int ico) : titulo(t), tipo(tp), icon(ico), editable(false), visible(true) {}
+    Opcion(std::string t, TipoOpcion tp) : tipo(tp), icon(-1), editable(false), visible(true) {
+		titulo.setStr(t);
+	}
+	Opcion(std::string t, TipoOpcion tp, int ico) : tipo(tp), icon(ico), editable(false), visible(true) {
+		titulo.setStr(t);
+	}
 	virtual std::string ejecutar() = 0; // Metodo virtual puro
     virtual ~Opcion() {}
 };
@@ -187,13 +193,34 @@ public:
 
 class OpcionTxtAndDynValue : public Opcion {
 public:
-    const std::string* valor; // Puntero al string estático/dinámico externo
+    const std::string* valor; // Puntero al string estatico/dinamico externo
     CallbackValue callback;
     void* context;
 
-    // El constructor recibe el string externo por referencia y guarda su dirección (&v)
+    // El constructor recibe el string externo por referencia y guarda su direccion (&v)
     OpcionTxtAndDynValue(std::string t, const std::string& v) 
         : Opcion(t, OPC_SHOW_DYNTXT_VAL), valor(&v), callback(NULL), context(NULL) {}
+
+    std::string ejecutar() override {
+        if (callback != NULL) {
+            // Pasamos la dirección del string original (que es lo que almacena el puntero)
+            return callback(context, (void *)valor); 
+        }
+        return "";
+    }
+};
+
+class OpcionTxtAndDynProgressValue : public OpcionTxtAndDynValue {
+public:
+	float *progress;   // fraccion 0..1 (se pinta x100)
+	float *kb;         // KB recibidos; se muestran si no hay porcentaje
+	int *color;		   // Used to show different text colors
+
+	// El constructor recibe el string externo por referencia y guarda su dirección (&v)
+    OpcionTxtAndDynProgressValue(std::string t, const std::string& v) 
+        : OpcionTxtAndDynValue(t, v), progress(NULL), kb(NULL), color(NULL) {
+		tipo = OPC_SHOW_DYNTXT_PROG_VAL;
+	}
 
     std::string ejecutar() override {
         if (callback != NULL) {
@@ -408,6 +435,56 @@ struct MenuStatus{
 	Menu *menu;
 };
 
+enum BIOS_STATUS {BS_FOUND, BS_DOWNLOADED, BS_NOTFOUND, BS_ERRORCRC, BS_ERRORDOWNLOAD};
+
+struct t_bios{
+	std::string filepath;
+	std::string urlpath;
+	std::string textFound;
+	float progress;     // fraccion 0..1 (si el servidor da el tamano)
+	float kbReceived;   // KB recibidos durante la descarga (0 fuera de ella)
+	BIOS_STATUS status;
+	int color;
+	std::string crc;
+
+	t_bios(){
+		status = BS_NOTFOUND;
+		progress = 0.0f;
+		kbReceived = 0.0f;
+		color = 0;
+	}
+};
+
+struct t_biosForSystem{
+	OpcionSubMenu *submenu;
+	std::vector<t_bios *> list;
+	std::string system;
+	std::string url;
+	bool allFound;
+	bool decompress;
+	
+	t_biosForSystem(){
+		allFound = true;
+		decompress = false;
+	}
+};
+
+struct t_file_url{
+	std::string file;
+	std::string url;
+	std::string crc;
+};
+
+struct t_bios_data{
+	std::string filepath;
+	std::string url;
+	std::string system;
+	std::string dir;
+	std::vector<t_file_url> listBios;
+	t_bios_data(){
+	}
+};
+
 // --- Clase Principal de Gestion de Menus ---
 class GestorMenus : public Object{
 private:
@@ -443,11 +520,32 @@ private:
 
     // Lista de todos los menus para liberar memoria al final
     std::vector<Menu*> todosLosMenus;
+public:
+	struct PreCoreOptEntry {
+		std::string key;
+		std::string label;
+		std::vector<std::string> values;
+		int selected;
+	};
+	struct PreCoreProfile {
+		std::string displayName;
+		std::string optFileName;
+		std::vector<PreCoreOptEntry> opts;
+	};
+private:
+	std::vector<PreCoreProfile*> preCoreProfiles;
+	void poblarPreLaunchCoreOptions(CfgLoader *refConfig);
+	std::string guardarPreCoreProfile(PreCoreProfile *profile);
+
 	Menu* menuCoreOptions;
+	Joystick* m_joystickRef;
+	t_joyMenuData m_corePadCtx;
 	// Submenus transitorios por categoria dentro de menuCoreOptions (V2). Se
 	// recrean en cada poblarCoreOptions; hay que liberarlos a mano antes de repoblar
 	// (OpcionSubMenu no borra su destino). Runtime only.
 	std::vector<Menu*> coreOptionSubmenus;
+	std::vector<std::string> biosFileStatus;
+
 	Menu* menuCheats;
 	Menu* menuSavestates;
 	Menu* menuAskSavestates;
@@ -462,6 +560,7 @@ private:
 	Menu* menuGuides;
 	Menu* menuGuideText;
 	Menu *menuOverscan;
+	OpcionSubMenu* submenuUpdater;
 
 	CONFIG_STATUS status;
 	int marginX;
@@ -488,7 +587,7 @@ private:
 	//Lista de lenguajes que soporta el menu. Se rellena al iniciar la aplicacion
 	std::vector<std::string> menuLangs;
 	int menuLangsIdx;
-
+	SDL_Surface *selecAlphaRec;
 
 	int getScreenNumLines();
 	void clearSelectedText();
@@ -522,30 +621,40 @@ private:
 	void poblarMenuAudio(Menu* menuLightgun, CfgLoader *refConfig);
 	void poblarMenuLogros(Menu* parentAchievements, CfgLoader *refConfig);
 	void poblarMenuLightgun(Menu* menuAudio, CfgLoader *refConfig);
+	void poblarMenuUpdater(Menu* menuEntrada, CfgLoader *refConfig);
 	void checkMultipleSystemCore(CfgLoader *refConfig, Menu *menu, int coreIdx);
 	void addMusicOptionList(CfgLoader *refConfig, int posCore, std::vector<Opcion*> &opciones);
 	void buscarIdiomasMenu(std::string selectedLang);
+	void addCoreOptionsByCategory(Menu *parent, const std::vector<std::pair<std::string, std::string> > &categories, const std::map<std::string, std::unique_ptr<cfg::t_emu_props> > &params);
+	
+
+	static bool checkBiosCRC(CrcCache &crcCache, t_bios *bios);
+	static void processHtmlSbi(const std::string &, const std::string &, std::vector<t_bios_data> &);
+	static std::string convertSbiName(const std::string &name);
 
 	std::string guardarJoysticks(Joystick* joy);
 	std::string guardarGameJoysticks(Joystick* joy);
 	std::string guardarCoreJoysticks(Joystick* joy);
 	std::string guardarCoreConfig(CfgLoader *refConfig);
 	std::string guardarCoreConfigGame(CfgLoader *refConfig);
-	std::string aplicarResolucionJuego(CfgLoader *refConfig);
 	std::string restaurarCoreConfig(CfgLoader *refConfig);
+	std::string restaurarJoyConfig(Joystick* joy);
 	std::string guardarMainConfig(CfgLoader *refConfig);
 	std::string guardarCoreOverridesConfig(t_save_override *overrides);
 	std::string reloadCheats(CfgLoader *refConfig);
 	std::string descargarCheats(CfgLoader *refConfig);
 	std::string volverEmulacion(CONFIG_STATUS *st);
 	std::string salirEmulacion(CONFIG_STATUS *st);
-	std::string apagarConsolaForzado(CONFIG_STATUS *st);
 	std::string startScrapping(CONFIG_STATUS *st);	
-	void addCoreOptionsByCategory(Menu *parent, const std::vector<std::pair<std::string, std::string> > &categories, const std::map<std::string, std::unique_ptr<cfg::t_emu_props> > &params);
+	std::string downloadBios(t_biosForSystem *);
+	
+	static DWORD WINAPI biosDownThread(LPVOID lpParam);
+	HANDLE hBiosDownThread;
 
 public:
     GestorMenus(int screenw, int screenh);
 	~GestorMenus();
+
     // Inicializa la estructura de menus
     void inicializar(CfgLoader *, Joystick *);
     // Logica de navegacion Arriba/Abajo
@@ -571,12 +680,15 @@ public:
 	void poblarJoystickTypes(Joystick *joystick);
 	void poblarMenuOverscan(Menu *menu);
 	void poblarMenuDiscos(int options);
+	inline void parse_sysbios_xml(const std::string& filepath, std::vector<t_bios_data>& biosDatabase);
 	void setGameLoaded(std::string gn){
 		this->gameFaqsMenu.gameName = gn;
 	}
 	std::string trOrDefault(const std::string &key, const char *fallback);
 
 	Menu* menuGameFilter;
+	Menu* menuUpdaterBios;
+	Menu* menuUpdaterSbi;
 	void iniciarFiltros(GameDataFields& gameDataFieldsFilter);
 
 	std::string stopScrapping(CONFIG_STATUS *st);
@@ -656,7 +768,6 @@ public:
 	static std::string gameGuidesSearchAction(void* inst, void *value);
 	static std::string gameGuideAction(void* inst, void *value);
 	static std::string selectBackground(void* inst, void *index, void *values);
-	static std::string selectTheme(void* inst, void *index, void *values);
 	static std::string selectMusicVolume(void* inst, void *index, void *values);
 	static std::string toggleMusicEnabled(void* inst, void *value);
 	static std::string toggleMidiEnabled(void* inst, void *value);
@@ -664,9 +775,12 @@ public:
 	static std::string selectMidiVolume(void* inst, void *index, void *values);
 	static std::string selectMidiModule(void* inst, void *index, void *values);
 	static std::string selectResolution(void* inst, void *index, void *values);
+	static std::string selectCrtSuperRes(void* inst, void *index, void *values);
+	static std::string selectCoreCrtSuperRes(void* inst, void *index, void *values);
 	static std::string selectLang(void* inst, void *index, void *values);
 	static std::string selectSync(void* inst, void *index, void *values);
-
+	static std::string fillBiosMenuAction(void* inst);
+	static std::string fillSbiMenuAction(void* inst);
 	static void onUserText(const std::string& text, void* userData);
 	static void onScrapPasswordText(const std::string& text, void* userData);
 	static void onRAUserText(const std::string& text, void* userData);

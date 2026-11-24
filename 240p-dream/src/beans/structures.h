@@ -140,7 +140,7 @@ struct t_scale_props{
 		ratio = .0f;
 		bpp = 16;
 		integer_scale = false;
-		integer_scale_type = SCALE_INT_NATIVE;
+		integer_scale_type = SCALE_INT_REDUCE;
 		sync_type = OPT_SYNC_VIDEO;
 	}
 };
@@ -859,7 +859,7 @@ struct t_joy_state {
 		memset(joyTypeIdx, 0, sizeof(joyTypeIdx));
 		memset(rapidFire, 0, sizeof(rapidFire));
 		rapidFireRateIdx = 1;
-		frontAxisAsPad = false;
+		frontAxisAsPad = true;
 		turboPhaseOn = true;
 		mouse_x = mouse_y = mouse_rel_x = mouse_rel_y = 0;
 		memset(mouse_buttons, 0, sizeof(mouse_buttons));
@@ -1132,7 +1132,6 @@ class ConfigEmu{
 		scaleIntMode = 0;
 		execIdx = 0;
 		syncMode = 0;
-		crtResolution = 0;
 		music_file_index = 0;
     }
     ~ConfigEmu(){
@@ -1217,8 +1216,6 @@ class ConfigEmu{
 	int scaleIntMode;
 	//Override the main synchronization mode
 	int syncMode;
-	//Override the main 240p CRT resolution (0=Auto, 1=320x240, 2=640x240, 3=1280x240, 4=1920x240)
-	int crtResolution;
 };
 
 struct t_rom_paths{
@@ -1314,4 +1311,46 @@ public:
 		}
 		return !relativePath.empty();
 	}
+};
+
+
+struct t_lockingStr {
+private:
+    std::string str;
+    CRITICAL_SECTION m_progressLock;
+
+    // Prohibimos copiar el struct para no corromper el CRITICAL_SECTION
+    t_lockingStr(const t_lockingStr&);
+    t_lockingStr& operator=(const t_lockingStr&);
+
+public:
+    t_lockingStr() {
+        InitializeCriticalSection(&m_progressLock);
+    }
+
+    ~t_lockingStr() {
+        DeleteCriticalSection(&m_progressLock);
+    }
+
+    // Método seguro para que el hilo de pintado lea el texto
+    std::string getStr() {
+        EnterCriticalSection(&m_progressLock);
+        std::string copy = str;
+        LeaveCriticalSection(&m_progressLock);
+        return copy;
+    }
+
+    // Sobrecarga para const char* (evita crear un std::string temporal en el callback)
+    void setStr(const char* text) {
+        EnterCriticalSection(&m_progressLock);
+        str = (text != NULL) ? text : "";
+        LeaveCriticalSection(&m_progressLock);
+    }
+
+    // Método interno para std::string
+    void setStr(const std::string& text) {
+        EnterCriticalSection(&m_progressLock);
+        str = text;
+        LeaveCriticalSection(&m_progressLock);
+    }
 };

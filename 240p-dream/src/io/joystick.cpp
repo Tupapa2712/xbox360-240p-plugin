@@ -53,7 +53,19 @@ Joystick::Joystick(){
 	setCursor(cursor_hidden);
 	hotkeys = new Hotkeys(&this->inputs);
 	memset(startHoldFrames, 0, sizeof(startHoldFrames));
+	resetHotkeyEnabler();
 	infoButtonsDirty = true;
+}
+
+/**
+* Olvida el estado del habilitador de hotkeys oculto (menus, cambio de juego...)
+*/
+void Joystick::resetHotkeyEnabler(){
+	memset(hotkeyEnablerToCore, 0, sizeof(hotkeyEnablerToCore));
+	memset(hkPulsadoDesde, 0, sizeof(hkPulsadoDesde));
+	memset(hkEnviarHasta, 0, sizeof(hkEnviarHasta));
+	memset(hkUsada, 0, sizeof(hkUsada));
+	memset(hkMantenido, 0, sizeof(hkMantenido));
 }
 
 Joystick::~Joystick(){
@@ -485,13 +497,17 @@ std::string Joystick::saveButtonsConfig(std::string ruta, bool hotkeysAndFronten
 		anal += Constant::intToString(inputs.frontAxisAsPad);
 		fileConfigJoystick.push_back(anal);
 	}
+	
     FileList::guardarVector(ruta, fileConfigJoystick);
 	Fileio::commit(ruta.c_str());
+	
+	//Reload the proper configuration
+	loadRetroJoyIni();
     return ruta;
 }
 
 /**
-* ★ OJO: esta carga PISA las asignaciones que haya en memoria, incluidas las que
+* OJO: esta carga PISA las asignaciones que haya en memoria, incluidas las que
 * el usuario acabe de hacer en el menu y no haya guardado.
 *
 * No es que haga un clear() al principio -- es mas sutil: los bucles de abajo
@@ -527,6 +543,8 @@ bool Joystick::loadButtonsRetro(std::string ruta) {
 	FileList::cargarVector(ruta, lineas);
     if (lineas.empty()) return false;
 
+	CfgLoader::appliedFileJoystick = dirutil::getFileName(ruta);
+
     for (std::size_t i = 0; i < lineas.size(); ++i) {
         std::string line = Constant::Trim(lineas[i]);
         if (line.empty()) continue;
@@ -536,9 +554,9 @@ bool Joystick::loadButtonsRetro(std::string ruta) {
             currentSection = line;
             continue;
         }
-
-        // --- PARSEO DE SECCIONES ---
-        if (currentSection == "[RETROPAD_LIST]") {
+	
+		// --- PARSEO DE SECCIONES ---
+		if (currentSection == "[RETROPAD_LIST]") { 
             if (line.find("name=") == 0) {
                 currentProfileName = line.substr(5);
             } else if (!currentProfileName.empty()) {
@@ -604,8 +622,8 @@ bool Joystick::loadButtonsRetro(std::string ruta) {
             } else if (line.find("anal=") == 0){
 				//Set a proper option for the frontend and don't rely only with the option assigned to the core
 				inputs.frontAxisAsPad = (line.substr(5) == "1");
-			}
-        }
+			} 
+        } 
     }
 
 	/* Relleno de hueco para los gatillos del frontend (JOY_AXIS_L2/R2). Son destinos
@@ -887,9 +905,31 @@ void Joystick::updateMice(int spanW, int spanH){
 */
 bool Joystick::pollKeys(int gameStatus){
     SDL_Event event;
+	t_key_input* keyInput = inputs.keyboard_state;
 
 	inputs.mouse_rel_x = 0;
 	inputs.mouse_rel_y = 0;
+
+	/* Habilitador de hotkeys oculto: solo en el juego y para el jugador 0. En
+	 * los menus se olvida, para no arrastrar un toque pendiente al volver. */
+	const Uint32 ahora = SDL_GetTicks();
+	const bool enJuego = gameStatus == EMU_STARTED;
+	if (!enJuego && (hkPulsadoDesde[0] != 0 || hotkeyEnablerToCore[0]))
+		resetHotkeyEnabler();
+
+	#ifdef _XBOX
+    // Optimización: Solo iterar si hay algún frame pendiente de liberar
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (startHoldFrames[i] > 0) {
+            if (--startHoldFrames[i] == 0) {
+                int sdlBtn = inputs.mapperCore.getSdlBtn(i, RETRO_DEVICE_ID_JOYPAD_START);
+                if ((unsigned int)sdlBtn < MAX_SDL_BUTTONS) {
+                    inputs.btn_state[i][sdlBtn] = false;
+                }
+            }
+        }
+    }
+    #endif
 
     while (SDL_PollEvent(&event)) {
         switch (event.type) {
@@ -903,8 +943,34 @@ bool Joystick::pollKeys(int gameStatus){
 				if (p >= MAX_PLAYERS) break;
                 const unsigned int btn = (unsigned int)event.jbutton.button;
                 if (btn < MAX_SDL_BUTTONS) {
-                    bool isDown = (event.type == SDL_JOYBUTTONDOWN);
-                    inputs.btn_state[p][btn] = isDown;
+                    const bool isDown = (event.type == SDL_JOYBUTTONDOWN);
+					inputs.btn_state[p][btn] = isDown;
+                    
+                    #ifdef _XBOX
+                    // Solo entramos si el botón pulsado es el mapeado como START. Esto lo hacemos
+					//porque en xbox 360 no hay evento keydown para el boton de start
+                    if (isDown && btn == (unsigned int)inputs.mapperCore.getSdlBtn(p, RETRO_DEVICE_ID_JOYPAD_START)) {
+                        startHoldFrames[p] = 3;
+                    }
+                    #endif
+
+					//Habilitador de hotkeys oculto (ver hotkeyEnablerToCore en joystick.h)
+					if (enJuego && p == 0 && (int)btn == inputs.mapperHotkeys.getSdlBtn(0, HK_MODIFIER)) {
+						if (isDown) {
+							hkPulsadoDesde[0] = ahora | 1;   //nunca 0, que es "suelto"
+							hkUsada[0] = false;
+							hkMantenido[0] = false;
+						} else {
+							//Toque sin hotkey y sin haber llegado a mantenido: el core lo
+							//ve pulsado HK_PULSO_MS a partir de ahora
+							if (hkPulsadoDesde[0] != 0 && !hkUsada[0] && !hkMantenido[0]) {
+								hkEnviarHasta[0] = ahora + HK_PULSO_MS;
+								LOG_DEBUG("Habilitador de hotkeys soltado sin hotkey: se envia al core");
+							}
+							hkPulsadoDesde[0] = 0;
+							hkMantenido[0] = false;
+						}
+					}
                 }
                 break;
             }
@@ -1080,13 +1146,15 @@ bool Joystick::pollKeys(int gameStatus){
 					// está en nuestra tabla — algunos cores hacen su propio mapeo.
 					salvia_dispatch_keyboard_event(true, retro_key, character, retro_mod);
 				} else if (retro_key < t_joy_state::MAX_RETRO_KEYS && retro_key != RETROK_UNKNOWN) {
-					t_key_input *keyInput = &inputs.keyboard_state[retro_key];
-					keyInput->keyjoydown = true;
-					keyInput->key        = retro_key;
-					keyInput->keyMod     = retro_mod;
-					keyInput->unicode    = character;
+					keyInput[retro_key].keyjoydown = true;
+					keyInput[retro_key].key        = retro_key;
+					keyInput[retro_key].keyMod     = retro_mod;
+					keyInput[retro_key].unicode    = character;
+
+					if (keyInput[RETROK_F4].keyjoydown && keyInput[RETROK_F4].keyMod & RETROKMOD_ALT){
+						evento.quit = true;
+					}
 				}
-				
 				break;
 			}
 
@@ -1113,6 +1181,20 @@ bool Joystick::pollKeys(int gameStatus){
 			}
         }
     }
+
+	/* Lo que vera el core del habilitador de hotkeys en este frame */
+	if (enJuego) {
+		if (hkPulsadoDesde[0] != 0) {
+			//Pulsado: pasa al core solo si se mantiene sin hotkey HK_MANTENIDO_MS
+			if (!hkUsada[0] && (int32_t)(ahora - hkPulsadoDesde[0]) >= (int32_t)HK_MANTENIDO_MS)
+				hkMantenido[0] = true;
+			hotkeyEnablerToCore[0] = hkMantenido[0] && !hkUsada[0];
+		} else {
+			//Suelto: toque sintetico pendiente (resta con signo, a prueba de vuelta)
+			hotkeyEnablerToCore[0] = (int32_t)(hkEnviarHasta[0] - ahora) > 0;
+		}
+	}
+
     return true;
 }
 
@@ -1121,7 +1203,11 @@ bool Joystick::pollKeys(int gameStatus){
 *
 */
 HOTKEYS_LIST Joystick::findHotkey(){
-	return hotkeys->procesarHotkeys(&inputs);
+	HOTKEYS_LIST hk = hotkeys->procesarHotkeys(&inputs);
+	//Hotkey disparada con el habilitador pulsado: el core no debe verlo
+	if (hk != HK_MAX && hkPulsadoDesde[0] != 0)
+		hkUsada[0] = true;
+	return hk;
 }
 
 /**
@@ -1165,4 +1251,44 @@ void Joystick::setInfoButtons(){
 		LOG_DEBUG("Added  key info: %s -> %s", btn.description.c_str(), btn.text.c_str());
 	}
 	infoButtonsDirty = true;
+}
+
+void Joystick::clearRetroJoyIni(){
+	dirutil dir;
+	//Main default configuration configuration
+	const std::string rutaIni = Constant::getAppDir() + Constant::getFileSep() + RETROPAD_INI;
+	//Core configuration file	
+	const std::string coreDefaultsPath = Constant::getAppDir() + std::string(Constant::tempFileSep) + "config"
+		+ std::string(Constant::tempFileSep) + PREFIX_DEFAULTS + CfgLoader::configMain[cfg::libretro_core].valueStr + CFG_JOY_EXT;
+	//Game configuration file
+	const std::string gameCfgJoyPath = dir.getFolder(romPaths.rompath) + Constant::getFileSep() + dir.getFileNameNoExt(romPaths.rompath) + CFG_JOY_EXT;
+	
+	if (!romPaths.rompath.empty() && dir.fileExists(gameCfgJoyPath.c_str()))
+		dir.borrarArchivo(gameCfgJoyPath);
+
+	if (dir.fileExists(coreDefaultsPath.c_str()))
+		dir.borrarArchivo(coreDefaultsPath);
+
+	loadButtonsRetro(rutaIni);
+}
+
+void Joystick::loadRetroJoyIni(){
+	const std::string coreName = CfgLoader::configMain[cfg::libretro_core].valueStr;
+	dirutil dir;
+	std::string rutaGameJoyCfg = dir.getFolder(romPaths.rompath) + Constant::getFileSep() + dir.getFileNameNoExt(romPaths.rompath) + CFG_JOY_EXT;
+
+	std::string coreDefaultsPath = Constant::getAppDir() + std::string(Constant::tempFileSep) + "config"
+		+ std::string(Constant::tempFileSep) + PREFIX_DEFAULTS + coreName + CFG_JOY_EXT;
+
+	if (!rutaGameJoyCfg.empty() && dirutil::fileExists(rutaGameJoyCfg.c_str())){
+		//Primero comprobamos si existe el fichero de configuracion del joystick en la ruta del juego
+		loadButtonsRetro(rutaGameJoyCfg);
+	} else if (dirutil::fileExists(coreDefaultsPath.c_str())){
+		//Comprobamos si existe en la ruta de configuracion del core
+		loadButtonsRetro(coreDefaultsPath);
+	} else {
+		//Finalmente y en ultima instancia, comprobamos si existe en la ruta del .ini y lo cargamos
+		std::string rutaIni = Constant::getAppDir() + Constant::getFileSep() + RETROPAD_INI;
+		loadButtonsRetro(rutaIni);
+	}
 }

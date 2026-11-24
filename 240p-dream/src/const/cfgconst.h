@@ -17,7 +17,8 @@ namespace cfg {
 			mainLang, scrapRegion, scrapLang, scrapOrigin, scrapUser, scrapPass, apikeytgdb, raUser, raPass, enableAchievements, hardcoreRA,
 			showEmptyEmulators, overscan_x, overscan_y, resolutionIndex,
 			lightgunCrossEnabled, lightgunCrossSize, lightgunThickness,
-			uiTheme,
+			refresh50Hz, smoothFonts,
+			crtSuperRes, rumbleN64, rumblePS1,
 			lastOptSel,
 			MAIN_CFG_MAX} MAIN_CFG_PROPS_KEYS;
 

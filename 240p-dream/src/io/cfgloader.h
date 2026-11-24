@@ -26,6 +26,7 @@ public:
 
 	static cfg::t_cfg_props configMain [cfg::MAIN_CFG_MAX];
 	static std::string appliedFileParmsCore;
+	static std::string appliedFileJoystick;
 
 	std::vector<std::unique_ptr<cfg::t_cfg_emu>> emulators;
 	std::map<std::string, std::unique_ptr<cfg::t_emu_props> > startupLibretroParams;
@@ -45,11 +46,11 @@ public:
 	 * guardados en la configuracion. */
 	int sc55ListIndex;
 	std::string sc55RomDir;
-	// Resolucion 240p CRT por juego (0=Auto/Sistema/Global, 1=320x240, 2=640x240, 3=1280x240, 4=1920x240)
-	int gameCrtResolution;
-
-	static bool resolveCrtOverride(int overrideIdx, int &w, int &h);
-	int readGameCrtResolution(const std::string& gamePath);
+	/* Lo mismo para el Roland MT-32 y el CM-32L (Munt), detras del SC-55. */
+	int mt32ListIndex;
+	std::string mt32RomDir;
+	int cm32lListIndex;
+	std::string cm32lRomDir;
 
 	std::string saveCoreParams();
 	void loadCoreParams();

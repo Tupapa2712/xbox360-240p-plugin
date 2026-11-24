@@ -8,6 +8,7 @@
 #include <io/fileio.h>
 #include <video/shaderpreset.h>
 #include <audio/sc55synth.h>
+#include <audio/mt32synth.h>
 
 #include <libretro/libretro.h>
 
@@ -22,10 +23,14 @@ extern "C"{
 
 cfg::t_cfg_props CfgLoader::configMain [cfg::MAIN_CFG_MAX];
 std::string CfgLoader::appliedFileParmsCore;
+std::string CfgLoader::appliedFileJoystick;
+
+const std::string CfgLoader::CONFIGFILE = "salvia.cfg";
 
 CfgLoader::CfgLoader(){
 	sc55ListIndex = -1;
-	gameCrtResolution = 0;
+	mt32ListIndex = -1;
+	cm32lListIndex = -1;
 	emuCfgPos = 0;
 	idxRegion = 0;
 	idxIdioma = 0;
@@ -61,14 +66,14 @@ void CfgLoader::initMainConfig(){
 	configMain[cfg::debug] = cfg::t_cfg_props("debug", false);
 	configMain[cfg::debug].desc = "#Enables debug mode";
 
-	configMain[cfg::resolution_width] = cfg::t_cfg_props("resolution_width", 1280);
-	configMain[cfg::resolution_width].desc = "#Game screen resolution width (320, 640, 1280 or 1920 for native 240p CRT)";
+	configMain[cfg::resolution_width] = cfg::t_cfg_props("resolution_width", 0);
+	configMain[cfg::resolution_width].desc = "#The screen resolution width (0 = Auto)";
 
-	configMain[cfg::resolution_height] = cfg::t_cfg_props("resolution_height", 240);
-	configMain[cfg::resolution_height].desc = "#Game screen resolution height (240 for native 240p CRT)";
+	configMain[cfg::resolution_height] = cfg::t_cfg_props("resolution_height", 0);
+	configMain[cfg::resolution_height].desc = "#The screen resolution height (0 = Auto)";
 
-	configMain[cfg::resolutionIndex] = cfg::t_cfg_props("resolutionIndex", (int)2);
-	configMain[cfg::resolutionIndex].desc = "#Game CRT 240p mode index (0=320x240, 1=640x240, 2=1280x240, 3=1920x240)";
+	configMain[cfg::resolutionIndex] = cfg::t_cfg_props("resolutionIndex", (int)0);
+	configMain[cfg::resolutionIndex].desc = "#Screen mode (0 = Auto)";
 
 	configMain[cfg::fullscreen] = cfg::t_cfg_props("fullscreen", false);
 	configMain[cfg::fullscreen].desc = "#The fullscreen mode or window mode";
@@ -99,7 +104,7 @@ void CfgLoader::initMainConfig(){
 	 * que se ata el menu; resolveShaderModes() sincroniza los dos.
 	 * Los valores numericos 0..12 de versiones anteriores se migran solos. */
 	configMain[cfg::shaderMode] = cfg::t_cfg_props("shaderMode",
-		std::string(ShaderRegistry::defaultId()));
+		std::string("00-nearest"));
 	configMain[cfg::shaderMode].desc =
 		"#Video shader: name of a preset in assets\\shaders (without the .hlslp extension)."
 		"\n#If the preset is missing, it falls back to the default one.";
@@ -125,8 +130,8 @@ void CfgLoader::initMainConfig(){
 									"\n#Or Hdd:\\roms for the main console hard disk"
 									"\n#Or game:\\roms for this directory";
 
-	configMain[cfg::showFps] = cfg::t_cfg_props("showFps", true);
-	configMain[cfg::showFps].desc = "#Show fps, live output resolution and memory utilization";
+	configMain[cfg::showFps] = cfg::t_cfg_props("showFps", false);
+	configMain[cfg::showFps].desc = "#Show fps, memory and cpu utilization";
 
 	configMain[cfg::packedImages] = cfg::t_cfg_props("packedImages", true);
 	configMain[cfg::packedImages].desc = "#Specify if the files scraped should be packed in a .bin file (recommended)";
@@ -134,9 +139,9 @@ void CfgLoader::initMainConfig(){
 	configMain[cfg::integerScale] = cfg::t_cfg_props("integerScale", true);
 	configMain[cfg::integerScale].desc = "#Enable or disable the screen integer scale";
 
-	configMain[cfg::scaleIntMode] = cfg::t_cfg_props("scaleIntMode", (int)SCALE_INT_NATIVE);
+	configMain[cfg::scaleIntMode] = cfg::t_cfg_props("scaleIntMode", (int)SCALE_INT_REDUCE);
 	configMain[cfg::scaleIntMode].desc = "#Integer screen scale mode used when integerScale is selected"
-										"\n#SCALE INT NATIVE     0"
+										"\n#SCALE INT REDUCE     0"
 										"\n#SCALE INT INCREASE   1"
 										"\n#SCALE FIXED 1X       2"
 										"\n#SCALE FIXED 2X       3"
@@ -190,7 +195,7 @@ void CfgLoader::initMainConfig(){
 										"\n#1 = General MIDI"
 										"\n#2 = Roland MT-32 / LA (translates MT-32 programs to GM)";
 
-	configMain[cfg::animBG] = cfg::t_cfg_props("animBG", (int)BG_IMAGE);
+	configMain[cfg::animBG] = cfg::t_cfg_props("animBG", (int)3); /* Gota purpura */
 	configMain[cfg::animBG].desc = "#Set the frontend background" 
 								"\n#Moving tiles        0"
 								"\n#Images              1"
@@ -199,15 +204,15 @@ void CfgLoader::initMainConfig(){
 								"\n#Wormholes hlsl      4"
 								"\n#none                5";
 
-	configMain[cfg::uiTheme] = cfg::t_cfg_props("uiTheme", (int)0);
-	configMain[cfg::uiTheme].desc = "#Visual UI theme (0=Frutiger Aero, 1=Crystal Ice, 2=Ocean 240p, 3=Classic)";
-
 	configMain[cfg::apikeytgdb] = cfg::t_cfg_props("apikey.tgdb", "");
 	configMain[cfg::apikeytgdb].desc = "#Api key for thegamesdb";
 
 	configMain[cfg::mainLang] = cfg::t_cfg_props("mainLang", "");
-	configMain[cfg::mainLang].desc = "#mainLang: Main system lang. If not specified on xbox 360, it will try to find the configured"
-									 "\n#from the console with some of this values: es, en, fr, de, it (although only 'es' and 'en' are actually supported)";
+	configMain[cfg::mainLang].desc = "#mainLang: Menu language. Supported values: en, es, de, fr, it, pt, pl, ru, sv, tr, no, nl,"
+									 "\n#ja (Japanese), kr (Korean), tw (Traditional Chinese) and zh (Simplified Chinese)."
+									 "\n#If empty, on xbox 360 the console language is used, and English if it is not supported. On Windows, English."
+									 "\n#Chinese, Japanese and Korean texts need the fonts in assets\\fonts (NotoSansJP/KR/TC/SC-Regular.ttf),"
+									 "\n#chosen by this language (Japanese for any other language).";
 
 	configMain[cfg::scrapRegion] = cfg::t_cfg_props("scrapRegion", "eu");
 	configMain[cfg::scrapRegion].desc = "#Region for the artwork scraper";
@@ -260,8 +265,24 @@ void CfgLoader::initMainConfig(){
 
 	configMain[cfg::lightgunThickness] = cfg::t_cfg_props("lightgunThickness", (int)1);
 	configMain[cfg::lightgunThickness].desc = "#Set the thickness of the lightgun crosshair";
+
+	configMain[cfg::refresh50Hz] = cfg::t_cfg_props("refresh50Hz", (int)REFRESH50_AUTO);
+	configMain[cfg::refresh50Hz].desc = "#Xbox 360 only. Switch the display to 50 Hz while a PAL game (49-51 fps) is running"
+										"\n#REFRESH50_NO        0  never"
+										"\n#REFRESH50_AUTO      1  only if the console settings say the display supports 50 Hz"
+										"\n#REFRESH50_CONFIRM   2  always, and keep it only if confirmed with A within 10 seconds";
 	
-	
+	configMain[cfg::smoothFonts] = cfg::t_cfg_props("smoothFonts", (bool) true);
+	configMain[cfg::smoothFonts].desc = "#Set the font smoothing and menu's transparencies";
+
+	configMain[cfg::crtSuperRes] = cfg::t_cfg_props("crtSuperRes", (int)3);
+	configMain[cfg::crtSuperRes].desc = "#240p Dream CRT Horizontal Resolution (0=640x240, 1=1280x240, 2=1920x240, 3=2560x240, 4=256x240, 5=320x240)";
+
+	configMain[cfg::rumbleN64] = cfg::t_cfg_props("rumbleN64", (bool)true);
+	configMain[cfg::rumbleN64].desc = "#Enable Rumble Pak vibration for Nintendo 64";
+
+	configMain[cfg::rumblePS1] = cfg::t_cfg_props("rumblePS1", (bool)true);
+	configMain[cfg::rumblePS1].desc = "#Enable DualShock vibration for PlayStation 1";
 
 	struct retro_system_info info;
 	memset(&info, 0, sizeof(info));
@@ -413,20 +434,54 @@ void CfgLoader::checkSystemLang(){
 
 		std::string langXbox;
 		switch (dwLanguage) {
-			case XC_LANGUAGE_SPANISH:
-				langXbox = "es";
-				break;
 			case XC_LANGUAGE_ENGLISH:
 				langXbox = DEFAULT_LANG;
 				break;
-			case XC_LANGUAGE_FRENCH:
-				langXbox = "fr";
+			case XC_LANGUAGE_JAPANESE:
+				langXbox = "ja";
 				break;
 			case XC_LANGUAGE_GERMAN:
 				langXbox = "de";
 				break;
+			case XC_LANGUAGE_FRENCH:
+				langXbox = "fr";
+				break;
+			case XC_LANGUAGE_SPANISH:
+				langXbox = "es";
+				break;
 			case XC_LANGUAGE_ITALIAN:
 				langXbox = "it";
+				break;
+			case XC_LANGUAGE_KOREAN:
+				langXbox = "kr";
+				break;
+			case XC_LANGUAGE_TCHINESE:
+				langXbox = "tw";   // chino tradicional (ScreenScraper: tw)
+				break;
+			case XC_LANGUAGE_PORTUGUESE:
+				langXbox = "pt";
+				break;
+			case XC_LANGUAGE_POLISH:
+				langXbox = "pl";
+				break;
+			case XC_LANGUAGE_RUSSIAN:
+				langXbox = "ru";
+				break;
+			case XC_LANGUAGE_SWEDISH:
+				langXbox = "sv";
+				break;
+			case XC_LANGUAGE_TURKISH:
+				langXbox = "tr";
+				break;
+			case XC_LANGUAGE_BNORWEGIAN:
+				langXbox = "no";
+				break;
+			case XC_LANGUAGE_DUTCH:
+				langXbox = "nl";
+				break;
+			case XC_LANGUAGE_SCHINESE_DEPRECATED:   // 0x0A, consolas anteriores a 2012
+			case XC_LANGUAGE_SCHINESE:
+				langXbox = "zh";   // chino simplificado
 				break;
 			default:
 				// Idioma por defecto si no coincide
@@ -441,7 +496,7 @@ void CfgLoader::checkSystemLang(){
 
 	bool fileFound = LanguageManager::instance()->loadLanguage(Constant::getAppDir() + "\\assets\\i18n\\" + mainLang + ".ini");
 	if (!fileFound){
-		LOG_DEBUG("Language %s not found", mainLang);
+		LOG_DEBUG("Language %s not found", mainLang.c_str());
 		mainLang = DEFAULT_LANG;
 		fileFound = LanguageManager::instance()->loadLanguage(Constant::getAppDir() + "\\assets\\i18n\\" + mainLang + ".ini");
 		if (!fileFound){
@@ -483,6 +538,9 @@ void CfgLoader::parsearIdiomas(const char* xmlData, const std::string& isoCode,
         // Obtenemos los valores. child_value() devuelve "" si no lo encuentra.
         const char* nomcourt = langue.child_value("nomcourt");
         const char* desc = langue.child_value(nombreNodo.c_str());
+        // Sin descripcion en el idioma del menu (los XML solo traen fr, de, en, es,
+        // it y pt): se usa la inglesa.
+        if (desc[0] == '\0') desc = langue.child_value("nom_en");
 		const int id = Constant::strToTipo<int>(langue.child_value("id"));
 
         idioma.push_back(FieldIdDesc(id, nomcourt, desc));
@@ -516,6 +574,9 @@ void CfgLoader::parsearRegiones(const char* xmlData, const std::string& isoCode,
         // Obtenemos los valores. child_value() devuelve "" si no lo encuentra.
         const char* nomcourt = langue.child_value("nomcourt");
         const char* desc = langue.child_value(nombreNodo.c_str());
+        // Sin descripcion en el idioma del menu (los XML solo traen fr, de, en, es,
+        // it y pt): se usa la inglesa.
+        if (desc[0] == '\0') desc = langue.child_value("nom_en");
 		const int id = Constant::strToTipo<int>(langue.child_value("id"));
 
         region.push_back(FieldIdDesc(id, nomcourt, desc));
@@ -646,9 +707,6 @@ void CfgLoader::loadEmuConfig(std::string emuname){
 					} else if (key.compare("syncMode") == 0){
 						//This option is to override the configMain, so the -1 value is for the auto option
 						cfgEmu->config.syncMode = Constant::strToTipo<int>(value) + 1;
-					} else if (key.compare("crtResolution") == 0){
-						//This option is to override the global CRT resolution (-1 = Auto, 0=320x240..3=1920x240)
-						cfgEmu->config.crtResolution = Constant::strToTipo<int>(value) + 1;
 					}
 				}
 			}             
@@ -867,32 +925,6 @@ int CfgLoader::effectiveSyncType(){
 // values/labels que el core rellena en SET_CORE_OPTIONS); si la key no existe
 // aun, crea una entrada minima. Robusto tanto antes como despues de que el core
 // declare las opciones. Devuelve true si el fichero existia y tenia contenido.
-bool CfgLoader::resolveCrtOverride(int overrideIdx, int &w, int &h){
-	/* overrideIdx: 0=Auto, 1=320x240, 2=640x240, 3=1280x240, 4=1920x240 */
-	static const int widths[4]  = {320, 640, 1280, 1920};
-	static const int heights[4] = {240, 240, 240,  240};
-	if (overrideIdx < 1 || overrideIdx > 4) return false;
-	w = widths[overrideIdx - 1];
-	h = heights[overrideIdx - 1];
-	return true;
-}
-
-int CfgLoader::readGameCrtResolution(const std::string& gamePath){
-	if (gamePath.empty()) return 0;
-	std::vector<std::string> fileConfig;
-	FileList::cargarVector(getGameCoreCfgPath(gamePath), fileConfig);
-	for (unsigned int i = 0; i < fileConfig.size(); i++){
-		const std::string& linea = fileConfig.at(i);
-		if (linea.empty() || linea[0] == '#') continue;
-		std::size_t pos = linea.find("=");
-		if (pos != std::string::npos && linea.substr(0, pos) == "dream_crt_resolution"){
-			int idx = Constant::strToTipo<int>(Constant::Trim(linea.substr(pos + 1)));
-			return (idx >= 1 && idx <= 4) ? idx : 0;
-		}
-	}
-	return 0;
-}
-
 bool CfgLoader::applyCoreParamsFile(const std::string& path){
 	std::vector<std::string> fileConfig;
 	FileList::cargarVector(path, fileConfig);
@@ -906,10 +938,6 @@ bool CfgLoader::applyCoreParamsFile(const std::string& path){
 		if ((pos = linea.find("=")) != std::string::npos){
 			std::string key = linea.substr(0, pos);
 			int idx = Constant::strToTipo<int>(Constant::Trim(linea.substr(pos + 1)));
-			if (key == "dream_crt_resolution"){
-				gameCrtResolution = (idx >= 0 && idx <= 4) ? idx : 0;
-				continue;
-			}
 			std::map<std::string, std::unique_ptr<cfg::t_emu_props> >::iterator it = startupLibretroParams.find(key);
 			if (it != startupLibretroParams.end()){
 				it->second->selected = idx;
@@ -934,7 +962,6 @@ std::string CfgLoader::getGameCoreCfgPath(const std::string& gamePath){
 // declarado por el core (defaultSelected, poblado por applyEntry en
 // SET_CORE_OPTIONS). Base para recargar limpio al cambiar de juego.
 void CfgLoader::resetCoreParamsToDefaults(){
-	gameCrtResolution = 0;
 	appliedFileParmsCore = LanguageManager::instance()->get("menu.core.options.msg.default");
 	for (std::map<std::string, std::unique_ptr<cfg::t_emu_props> >::iterator it = startupLibretroParams.begin();
 	     it != startupLibretroParams.end(); ++it) {
@@ -969,8 +996,6 @@ std::string CfgLoader::saveGameCoreParams(const std::string& gamePath){
 
 	std::vector<std::string> fileCoreCfg;
 	std::string optionValues;
-	fileCoreCfg.push_back("#Game 240p CRT resolution (0=Auto, 1=320x240, 2=640x240, 3=1280x240, 4=1920x240)");
-	fileCoreCfg.push_back("dream_crt_resolution=" + Constant::TipoToStr(gameCrtResolution));
 	for (auto it = startupLibretroParams.begin(); it != startupLibretroParams.end(); ++it) {
 		optionValues = "";
 		for (std::size_t i=0; i < it->second->values.size(); i++){
@@ -1119,6 +1144,22 @@ void CfgLoader::findAllSoundfonts(){
 		sc55ListIndex = (int)soundfontFiles.size();
 		soundfontFiles.push_back(mk2 ? "Roland SC-55mkII" : "Roland SC-55");
 	}
+
+	/* Roland MT-32 y CM-32L (Munt), igual: su par de ROMs (control + PCM) en
+	 * 'system' o en sus subcarpetas (ver Mt32Synth::findRomSet), detras del
+	 * SC-55. */
+	mt32ListIndex = -1;
+	mt32RomDir.clear();
+	if (Mt32Synth::findRomSet(configMain[cfg::libretrosystem].valueStr, Mt32Synth::MODEL_MT32, mt32RomDir)){
+		mt32ListIndex = (int)soundfontFiles.size();
+		soundfontFiles.push_back("Roland MT-32");
+	}
+	cm32lListIndex = -1;
+	cm32lRomDir.clear();
+	if (Mt32Synth::findRomSet(configMain[cfg::libretrosystem].valueStr, Mt32Synth::MODEL_CM32L, cm32lRomDir)){
+		cm32lListIndex = (int)soundfontFiles.size();
+		soundfontFiles.push_back("Roland CM-32L");
+	}
 }
 
 // Metodo para guardar la configuracion en un archivo
@@ -1225,7 +1266,7 @@ std::string CfgLoader::saveCoreOverrideParams(int emuIdx){
 		"\n#ENABLED                 1", &ConfigEmu::integerScale},
         {"scaleIntMode", "Integer screen scale mode used when integerScale is selected"
 		"\n#AUTO                -1"
-		"\n#SCALE INT NATIVE	 0"
+		"\n#SCALE INT REDUCE	 0"
 		"\n#SCALE INT INCREASE   1"
 		"\n#SCALE FIXED 1X		 2"
 		"\n#SCALE FIXED 2X		 3"
@@ -1237,13 +1278,7 @@ std::string CfgLoader::saveCoreOverrideParams(int emuIdx){
 		"\n#SYNC_TO_AUDIO	0"
 		"\n#SYNC_TO_VIDEO   1"
 		"\n#SYNC_TO_VIDEO_ADAPT 2"
-		"\n#SYNC_NONE       3", &ConfigEmu::syncMode},
-		{"crtResolution", "240p CRT output resolution override for this system"
-		"\n#AUTO       -1"
-		"\n#320x240     0"
-		"\n#640x240     1"
-		"\n#1280x240    2"
-		"\n#1920x240    3", &ConfigEmu::crtResolution}
+		"\n#SYNC_NONE       3", &ConfigEmu::syncMode}
     };
 
 	//The override list, has the option "auto", which is represented as -1. That's why we subtract 1
