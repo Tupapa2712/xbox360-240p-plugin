@@ -41,6 +41,7 @@ This free, open-source project unlocks **real 240p output** on Xbox 360 RGH — 
 ### `t240.xex` Plugin (Native Xbox 360 & XBLA Games)
 - **Direct `2560x240` with One Combo:** No external scripts, selectors, or popups needed. Just press **`LT + RT + L3 + R3`** inside any Xbox 360 or Arcade game to switch between **`2560x240`** and **`480i`**.
 - **Clean & Lag-Free Switching:** Smooth, stable return to **480i** with zero on-screen popups and zero added input lag.
+- **Stealth Server Compatible:** Works cleanly alongside Xbox Live Stealth server plugins (such as **xbGuard**, **Proto**, etc.) in DashLaunch.
 
 ---
 
@@ -51,7 +52,7 @@ This free, open-source project unlocks **real 240p output** on Xbox 360 RGH — 
 * **CRT TV** connected via S-video, Component, SCART, or AV cable (set Xbox display to **480i**)
 * **DashLaunch** and **Aurora Dashboard**
 
-> **IMPORTANT — Not Compatible with Stealth Servers:** `t240.xex` is **NOT compatible with Xbox Live Stealth servers**. Do not load it alongside any Stealth server plugin in `launch.ini`. This project is for offline RGH/JTAG CRT use only.
+> **Stealth Server Compatible:** `t240.xex` v2.30 is **compatible with Xbox Live Stealth servers** (such as **xbGuard**, **Proto**, etc.) — simply assign `t240.xex` to its own free plugin slot in `launch.ini` (for example, `plugin5`).
 >
 > **Note:** No copyrighted ROMs or BIOS files are included in the ZIP. You can use the built-in BIOS downloader in `240p Dream` or add your own legally dumped games and BIOS files.
 
@@ -79,7 +80,7 @@ This free, open-source project unlocks **real 240p output** on Xbox 360 RGH — 
 1. **Xbox 360 & XBLA loading screens, menus & level changes:**
    - Start native Xbox 360 and XBLA games from Aurora in **480i**, then press **`LT + RT + L3 + R3`** once you are in the game.
    - **If a game gets stuck on a loading screen, menu, or level transition while in 240p:** press **`LT + RT + L3 + R3`** to switch back to **480i** so it can move forward, and press **`LT + RT + L3 + R3`** again once gameplay continues.
-2. **Not Compatible with Stealth Servers:** Make sure Stealth plugins are disabled in `launch.ini` when using `t240.xex`.
+2. **Stealth Server Compatibility:** `t240.xex` v2.30 is compatible with Xbox Live Stealth servers (such as **xbGuard** or **Proto**) when loaded in its own DashLaunch plugin slot in `launch.ini`.
 3. **Turning Off Safely:** Switch back to **480i** before shutting down; if you use the physical power button while in 240p, wait 5–10 seconds for the console to restore 480i and power off cleanly.
 
 ---
