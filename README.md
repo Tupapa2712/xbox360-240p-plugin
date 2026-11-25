@@ -90,6 +90,18 @@ This free, open-source project unlocks **real 240p output** on Xbox 360 RGH — 
 
 ---
 
+## Why isn't 240p activating on your console?
+
+If you followed the steps and neither `240p Dream` nor your games switch to 240p, check these 5 common causes:
+
+1. **HDMI or Component cable set to HDTV (480p):** This plugin only works over **analog SDTV (480i)** output — it does **not** work over HDMI or HDMI-to-AV adapters. If you use a Component cable, make sure the physical switch on the cable plug is set to **`TV`** (not `HDTV`), otherwise the console outputs 480p and 240p will not activate.
+2. **Console set to 50 Hz (PAL-50):** The plugin is built for **60 Hz** output (**NTSC** or **PAL-60**). If your console is set to 50 Hz, switch your Xbox 360 display settings to **60 Hz (PAL-60)**.
+3. **Incompatible Kernel or motherboard:** Only tested and supported on **Retail Kernel `17559`** (on HANA-based consoles such as Slim / Corona). On other kernel versions or older **Xenon** motherboards (which use the older ANA chip), it may not work the same way.
+4. **Wrong path or wrong `launch.ini` file:** In `launch.ini`, the path must start with **`Hdd:\`** (never `Hdd1:\`). Also, if you use USB / **BadUpdate** methods (such as XeUnshackle or FreeMyXe), a **`Usb:\launch.ini`** file can take priority over `Hdd:\launch.ini` and prevent the plugin from loading.
+5. **Quick way to check if the plugin loaded:** Open **`240p Dream` → `Options` → `Video`** and verify that it says **`Plugin t240.xex: Active`**. If it shows **`Not Detected`**, DashLaunch did not load the plugin from your `launch.ini`.
+
+---
+
 ## Official v2.30 SHA-256 Checksums
 
 <details>
